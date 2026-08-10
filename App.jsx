@@ -1,0 +1,1940 @@
+import React, { useState, useEffect, useRef, useMemo, useCallback, createContext, useContext } from 'react';
+import { supabase } from './supabaseClient';
+
+/* ============================================================
+   BRAND THEME
+   Exact corporate colors (Deep Navy / Vibrant Cyan-Teal) applied
+   via plain CSS classes — Tailwind's arbitrary-value syntax
+   (e.g. bg-[#0A4D8C], scale-[0.99]) requires a JIT build step
+   that isn't available in this environment, so those never
+   actually rendered correctly. Real CSS is the reliable fix.
+   ============================================================ */
+const THEME_CSS = `
+  :root {
+    --hhcs-navy: #0A4D8C;
+    --hhcs-navy-dark: #073A6B;
+    --hhcs-teal: #00A8B5;
+    --hhcs-teal-dark: #00868F;
+    --hhcs-teal-tint: #E3F6F7;
+    --hhcs-navy-tint: #E7EEF6;
+  }
+  .hhcs-bg-navy { background-color: var(--hhcs-navy); }
+  .hhcs-bg-teal { background-color: var(--hhcs-teal); }
+  .hhcs-bg-teal-tint { background-color: var(--hhcs-teal-tint); }
+  .hhcs-bg-navy-tint { background-color: var(--hhcs-navy-tint); }
+  .hhcs-text-navy { color: var(--hhcs-navy); }
+  .hhcs-text-teal { color: var(--hhcs-teal-dark); }
+  .hhcs-border-teal { border-color: var(--hhcs-teal); }
+  .hhcs-border-navy { border-color: var(--hhcs-navy); }
+  .hhcs-btn-primary { background-color: var(--hhcs-teal); color: #ffffff; }
+  .hhcs-btn-primary:active { background-color: var(--hhcs-teal-dark); }
+  .hhcs-btn-primary:disabled { background-color: #94a3b8; }
+  .hhcs-tab-active { background-color: #ffffff; color: var(--hhcs-teal-dark); border-bottom: 2px solid var(--hhcs-teal); }
+  .hhcs-chip-active { background-color: var(--hhcs-teal); color: #ffffff; border-color: var(--hhcs-teal); }
+  .hhcs-input:focus { outline: none; box-shadow: 0 0 0 2px var(--hhcs-teal); border-color: var(--hhcs-teal); }
+  .hhcs-required-empty { border-color: #dc2626 !important; }
+`;
+
+/* ============================================================
+   MOCK DATA — real participant roster.
+   Service codes: SC = Support Coordination, SW = Support Work,
+   SC.SW = both, INS = In-Home Support, QLD = Queensland region.
+   ============================================================ */
+const MOCK_PARTICIPANTS = [
+  { id: 1, name: 'Andre Lahood', service: 'SC.SW' },
+  { id: 2, name: 'Colin Brown', service: 'SC' },
+  { id: 3, name: 'Craig Legender', service: 'SW' },
+  { id: 4, name: 'Erin Rolinson', service: 'SC.SW' },
+  { id: 5, name: 'Jatin Dhanji', service: 'SW' },
+  { id: 6, name: 'John Deada', service: 'SC' },
+  { id: 7, name: 'Joshua Baker', service: 'SC' },
+  { id: 8, name: 'Joy Furaha Noro', service: 'SW' },
+  { id: 9, name: 'Larvia Tucker', service: 'SC not funded' },
+  { id: 10, name: 'Loralei Steele', service: 'INS' },
+  { id: 11, name: 'Madonna McLean', service: 'SC' },
+  { id: 12, name: 'Mario Chaudhry-Lyons', service: 'SC' },
+  { id: 13, name: 'Mary (Abuk Wol)', service: 'SW' },
+  { id: 14, name: 'Moses Ramazani', service: 'SC.SW' },
+  { id: 15, name: "Naomi O'Reilly", service: 'SC' },
+  { id: 16, name: 'Nikki Cohen', service: 'SC.SW' },
+  { id: 17, name: 'Paige Blackler', service: 'SW' },
+  { id: 18, name: 'Rick McGregor', service: 'SC' },
+  { id: 19, name: 'Ruth', service: 'INS' },
+  { id: 20, name: 'Scott Everett', service: 'SW' },
+  { id: 21, name: 'Shayah Perera', service: 'SC.SW QLD' },
+  { id: 22, name: 'Thomas Baker', service: 'SC' },
+  { id: 23, name: 'Wali Kassis', service: 'SC.SW' },
+  { id: 24, name: 'Yasmine Etsa', service: 'SC' },
+];
+
+function generateWeekDates(startDateStr) {
+  const start = new Date(startDateStr + 'T00:00:00');
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(start);
+    d.setDate(start.getDate() + i);
+    return d.toISOString().slice(0, 10);
+  });
+}
+
+const DAY_LABEL = (dateStr) =>
+  new Date(dateStr + 'T00:00:00').toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric' });
+
+/** Formats YYYY-MM-DD as a friendly Australian date, e.g. "Mon, 3 Aug 2026". */
+const FULL_DATE_LABEL = (dateStr) =>
+  new Date(dateStr + 'T00:00:00').toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+
+function pad2(n) { return String(n).padStart(2, '0'); }
+function toISODate(d) { return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; }
+function addDays(dateStr, days) {
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setDate(d.getDate() + days);
+  return toISODate(d);
+}
+/** Returns the Monday of the week containing dateStr — Australian/NDIS rosters run Mon-Sun. */
+function getMondayOf(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00');
+  const day = d.getDay(); // 0 = Sunday ... 6 = Saturday
+  const diffToMonday = day === 0 ? -6 : 1 - day;
+  d.setDate(d.getDate() + diffToMonday);
+  return toISODate(d);
+}
+
+// Calculated fresh every time the app loads — NOT a fixed string — so the
+// roster automatically rolls onto the next week (and "today" moves forward)
+// without anyone needing to edit the code. Week 1 ending doesn't require a
+// manual bump to "9, Monday 10" — this recalculates itself every load.
+const TODAY_STR = toISODate(new Date());
+const CURRENT_WEEK_START = getMondayOf(TODAY_STR);
+
+const MEAL_TYPES = [
+  { key: 'breakfast', label: 'Breakfast' },
+  { key: 'lunch', label: 'Lunch' },
+  { key: 'dinner', label: 'Dinner' },
+  { key: 'snack', label: 'Snacks' },
+  { key: 'fluids', label: 'Fluids' },
+];
+
+const WEEK_START = CURRENT_WEEK_START;
+const WEEK_DATES = generateWeekDates(WEEK_START);
+
+// participantId -> date -> mealKey -> { description, fluids_ml, notes, recorded_by }
+const MOCK_FOOD_DIARY = {
+  1: {
+    [WEEK_DATES[0]]: {
+      breakfast: { description: 'Oats with banana', notes: '', recorded_by: 'JM' },
+      lunch: { description: 'Chicken sandwich', notes: 'Ate half, felt full', recorded_by: 'JM' },
+      dinner: { description: '', notes: '', recorded_by: '' },
+      snack: { description: 'Apple slices', notes: '', recorded_by: 'JM' },
+      fluids: { fluids_ml: 900, notes: 'Prefers water over juice', recorded_by: 'JM' },
+    },
+  },
+  4: {
+    [WEEK_DATES[0]]: {
+      breakfast: { description: 'Toast and eggs', notes: '', recorded_by: 'KP' },
+      lunch: { description: '', notes: '', recorded_by: '' },
+      dinner: { description: '', notes: '', recorded_by: '' },
+      snack: { description: '', notes: '', recorded_by: '' },
+      fluids: { fluids_ml: 600, notes: '', recorded_by: 'KP' },
+    },
+  },
+};
+
+const AWOKEN_OPTIONS = ['Self-settled', 'Required assistance', 'Distressed', 'Toileting', 'N/A'];
+const MOOD_OPTIONS = ['Calm', 'Settled', 'Unsettled', 'Distressed', 'Content'];
+
+// participantId -> date -> [{ id, time_slot, status, how_awoken, mood, notes, recorded_by }]
+const MOCK_SLEEP_LOGS = {
+  1: {
+    [TODAY_STR]: [
+      { id: 'sl-1', time_slot: '20:00', status: 'awake', how_awoken: 'N/A', mood: 'Settled', notes: 'Watching TV before bed', recorded_by: 'JM' },
+      { id: 'sl-2', time_slot: '22:00', status: 'asleep', how_awoken: 'N/A', mood: 'Calm', notes: '', recorded_by: 'JM' },
+      { id: 'sl-3', time_slot: '00:00', status: 'pending', how_awoken: '', mood: '', notes: '', recorded_by: '' },
+      { id: 'sl-4', time_slot: '02:00', status: 'pending', how_awoken: '', mood: '', notes: '', recorded_by: '' },
+      { id: 'sl-5', time_slot: '04:00', status: 'pending', how_awoken: '', mood: '', notes: '', recorded_by: '' },
+      { id: 'sl-6', time_slot: '06:00', status: 'pending', how_awoken: '', mood: '', notes: '', recorded_by: '' },
+    ],
+  },
+  4: {
+    [TODAY_STR]: [
+      { id: 'sl-7', time_slot: '20:00', status: 'asleep', how_awoken: 'N/A', mood: 'Calm', notes: '', recorded_by: 'KP' },
+      { id: 'sl-8', time_slot: '22:00', status: 'pending', how_awoken: '', mood: '', notes: '', recorded_by: '' },
+      { id: 'sl-9', time_slot: '00:00', status: 'pending', how_awoken: '', mood: '', notes: '', recorded_by: '' },
+      { id: 'sl-10', time_slot: '02:00', status: 'pending', how_awoken: '', mood: '', notes: '', recorded_by: '' },
+      { id: 'sl-11', time_slot: '04:00', status: 'pending', how_awoken: '', mood: '', notes: '', recorded_by: '' },
+      { id: 'sl-12', time_slot: '06:00', status: 'pending', how_awoken: '', mood: '', notes: '', recorded_by: '' },
+    ],
+  },
+};
+
+// participantId -> [{ id, medication_name, scheduled_date, scheduled_time, status, recorded_by }]
+const MOCK_SIGNOFFS = {
+  1: [
+    { id: 101, medication_name: 'Metformin 500mg', scheduled_date: TODAY_STR, scheduled_time: '08:00', status: 'given', recorded_by: 'JM' },
+    { id: 102, medication_name: 'Metformin 500mg', scheduled_date: TODAY_STR, scheduled_time: '18:00', status: 'pending', recorded_by: '' },
+    { id: 103, medication_name: 'Vitamin D', scheduled_date: TODAY_STR, scheduled_time: '08:00', status: 'pending', recorded_by: '' },
+  ],
+  13: [
+    { id: 104, medication_name: 'Sertraline 50mg', scheduled_date: TODAY_STR, scheduled_time: '09:00', status: 'missed', recorded_by: 'TN' },
+  ],
+};
+
+/* ============================================================
+   STAFF ROSTER — for the click-your-name login screen.
+   ============================================================ */
+const STAFF_LIST = [
+  { name: 'Kabanda Mbuyi', role: null },
+  { name: 'Karma Dema', role: null },
+  { name: 'Mary Johns', role: null },
+  { name: 'Melissa Egan', role: 'Admin' },
+  { name: 'Michael Cohen', role: 'Driver' },
+  { name: 'Miriam Lee', role: null },
+  { name: 'Okechukwu Ibe', role: null },
+  { name: 'Saxena Johnson', role: null },
+  { name: 'Sayed Khilwati', role: 'RN' },
+  { name: 'Bernice Ritchie', role: null },
+  { name: 'Chanceline Ibanda', role: null },
+  { name: 'Chhoti Ranwa', role: null },
+  { name: 'Faraja Mugisho', role: null },
+];
+
+/* ============================================================
+   PARTICIPANT CONTEXT
+   ============================================================ */
+const ParticipantContext = createContext(null);
+
+function ParticipantProvider({ children }) {
+  const [participants, setParticipants] = useState([]);
+  const [selectedId, setSelectedId] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  // Pulls from the SAME Supabase "participants" table used by the main
+  // NDIS Staff Portal — nothing is written here, only read.
+  useEffect(() => {
+    let cancelled = false;
+    async function loadParticipants() {
+      setLoading(true);
+      setError(null);
+      const { data, error: fetchError } = await supabase
+        .from('participants')
+        .select('id, name, service')
+        .order('name', { ascending: true });
+      if (cancelled) return;
+      if (fetchError) {
+        setError(fetchError.message);
+      } else {
+        setParticipants(data || []);
+        if (data && data.length > 0) setSelectedId(data[0].id);
+      }
+      setLoading(false);
+    }
+    loadParticipants();
+    return () => { cancelled = true; };
+  }, []);
+
+  function selectParticipant(id) {
+    setSelectedId(id);
+  }
+
+  const selectedParticipant = useMemo(
+    () => participants.find((p) => String(p.id) === String(selectedId)) || null,
+    [participants, selectedId]
+  );
+
+  const value = { participants, selectedId, selectedParticipant, selectParticipant, loading, error };
+  return <ParticipantContext.Provider value={value}>{children}</ParticipantContext.Provider>;
+}
+
+function useParticipant() {
+  const ctx = useContext(ParticipantContext);
+  if (!ctx) throw new Error('useParticipant must be used within a ParticipantProvider');
+  return ctx;
+}
+
+/* ============================================================
+   STAFF ATTRIBUTION CONTEXT
+   Every log entry (sleep check, food diary, medication sign-off)
+   must be attributed to the staff member who recorded it. This
+   is captured once per session in the header and stamped onto
+   every save — same idea as `recorded_by` in the DB schema.
+   ============================================================ */
+const StaffContext = createContext(null);
+
+function StaffProvider({ children }) {
+  const [staffName, setStaffName] = useState('');
+  return <StaffContext.Provider value={{ staffName, setStaffName }}>{children}</StaffContext.Provider>;
+}
+
+function useStaff() {
+  const ctx = useContext(StaffContext);
+  if (!ctx) throw new Error('useStaff must be used within a StaffProvider');
+  return ctx;
+}
+
+/** Shared guard used by every save handler below. Returns true if OK to proceed. */
+function requireStaffName(staffName) {
+  if (!staffName || !staffName.trim()) {
+    alert('Please enter your name or initials at the top of the page before saving an entry.');
+    return false;
+  }
+  return true;
+}
+
+/* ============================================================
+   STAFF LOGIN — click your name, then enter a 4-digit PIN.
+   NOTE: there is no backend staff/PIN table wired up yet, so the
+   PIN is not actually validated against anything — this is a
+   friendlier entry flow, not real authentication. Ask if you'd
+   like a Supabase "staff" table with real PINs to check against.
+   ============================================================ */
+function StaffLogin() {
+  const { setStaffName } = useStaff();
+  const [selected, setSelected] = useState(null);
+  const [pin, setPin] = useState('');
+  const [error, setError] = useState('');
+
+  function pressDigit(d) {
+    if (pin.length >= 4) return;
+    setError('');
+    setPin((p) => p + d);
+  }
+
+  function backspace() {
+    setError('');
+    setPin((p) => p.slice(0, -1));
+  }
+
+  function enter() {
+    if (pin.length !== 4) {
+      setError('Enter your 4-digit PIN.');
+      return;
+    }
+    setStaffName(selected.role ? `${selected.name} (${selected.role})` : selected.name);
+  }
+
+  if (!selected) {
+    return (
+      <div className="min-h-screen bg-slate-100 p-4 sm:p-6 lg:p-10 flex items-center justify-center">
+        <div className="w-full max-w-md lg:max-w-2xl xl:max-w-3xl space-y-4">
+          <header className="hhcs-bg-navy rounded-xl p-4 lg:p-6 text-center">
+            <h1 className="text-lg lg:text-2xl font-bold text-white">Hope Health & Care Services</h1>
+            <p className="text-xs lg:text-sm text-slate-200">NDIS Participant Care Log — Staff Portal</p>
+          </header>
+          <div className="rounded-xl border hhcs-border-navy bg-white p-4 lg:p-6">
+            <p className="text-sm font-semibold hhcs-text-navy mb-3">Tap your name to sign in</p>
+            <div className="grid grid-cols-2 lg:grid-cols-3 gap-2">
+              {STAFF_LIST.map((s) => (
+                <button
+                  key={s.name}
+                  type="button"
+                  onClick={() => setSelected(s)}
+                  className="text-left rounded-lg border border-slate-200 px-3 py-2.5 hover:hhcs-bg-teal-tint hover:hhcs-border-teal transition-colors"
+                >
+                  <p className="text-sm font-medium text-slate-800 truncate">{s.name}</p>
+                  {s.role && <p className="text-xs hhcs-text-teal">{s.role}</p>}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-100 p-4 sm:p-6 lg:p-10 flex items-center justify-center">
+      <div className="w-full max-w-sm space-y-4">
+        <header className="hhcs-bg-navy rounded-xl p-4 text-center">
+          <h1 className="text-lg font-bold text-white">{selected.name}</h1>
+          {selected.role && <p className="text-xs text-slate-200">{selected.role}</p>}
+        </header>
+        <div className="rounded-xl border hhcs-border-navy bg-white p-6 space-y-4">
+          <p className="text-sm font-semibold hhcs-text-navy text-center">Enter your 4-digit PIN</p>
+          <div className="flex justify-center gap-3">
+            {[0, 1, 2, 3].map((i) => (
+              <div
+                key={i}
+                className={`w-11 h-12 rounded-lg border flex items-center justify-center text-lg font-bold
+                  ${pin.length > i ? 'hhcs-border-teal hhcs-bg-teal-tint hhcs-text-teal' : 'border-slate-200 text-slate-300'}`}
+              >
+                {pin.length > i ? '•' : ''}
+              </div>
+            ))}
+          </div>
+          {error && <p className="text-xs text-red-600 font-medium text-center">{error}</p>}
+          <div className="grid grid-cols-3 gap-2">
+            {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((d) => (
+              <button
+                key={d}
+                type="button"
+                onClick={() => pressDigit(d)}
+                className="py-3 rounded-lg border border-slate-200 text-lg font-semibold text-slate-700 hover:hhcs-bg-teal-tint"
+              >
+                {d}
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => { setSelected(null); setPin(''); setError(''); }}
+              className="py-3 rounded-lg border border-slate-200 text-sm font-medium text-slate-500"
+            >
+              Back
+            </button>
+            <button
+              type="button"
+              onClick={() => pressDigit('0')}
+              className="py-3 rounded-lg border border-slate-200 text-lg font-semibold text-slate-700 hover:hhcs-bg-teal-tint"
+            >
+              0
+            </button>
+            <button
+              type="button"
+              onClick={backspace}
+              className="py-3 rounded-lg border border-slate-200 text-sm font-medium text-slate-500"
+            >
+              ⌫
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={enter}
+            disabled={pin.length !== 4}
+            className="hhcs-btn-primary w-full font-semibold py-3 rounded-lg disabled:cursor-not-allowed"
+          >
+            Enter
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   COMPACT STATUS BAR — shown once signed in, replaces the old
+   free-text name field in the main dashboard.
+   ============================================================ */
+function StaffAttributionBar() {
+  const { staffName, setStaffName } = useStaff();
+
+  return (
+    <div className="rounded-xl border hhcs-border-navy bg-white p-3 flex items-center justify-between gap-3">
+      <div>
+        <p className="text-xs font-semibold hhcs-text-navy uppercase tracking-wide">Signed in as</p>
+        <p className="text-sm font-semibold text-slate-800">{staffName}</p>
+      </div>
+      <button
+        type="button"
+        onClick={() => setStaffName('')}
+        className="text-xs font-medium hhcs-text-teal underline shrink-0"
+      >
+        Switch user
+      </button>
+    </div>
+  );
+}
+
+/* ============================================================
+   PARTICIPANT SELECTOR
+   ============================================================ */
+function ParticipantSelector({ className = '' }) {
+  const { participants, selectedId, selectParticipant, loading, error } = useParticipant();
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+
+  const filtered = useMemo(() => {
+    if (!query.trim()) return participants;
+    const q = query.toLowerCase();
+    return participants.filter(
+      (p) => p.name.toLowerCase().includes(q) || p.service.toLowerCase().includes(q)
+    );
+  }, [participants, query]);
+
+  const selected = participants.find((p) => String(p.id) === String(selectedId));
+
+  if (loading) return <div className={`animate-pulse h-12 bg-slate-200 rounded-lg ${className}`} />;
+  if (error) {
+    return (
+      <div className={`text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg p-3 ${className}`}>
+        Could not load participants: {error}
+      </div>
+    );
+  }
+
+  return (
+    <div className={`relative w-full ${className}`}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="hhcs-input w-full flex items-center justify-between gap-3 rounded-xl border border-slate-300
+                   bg-white px-4 py-3 text-left shadow-sm"
+      >
+        <div className="min-w-0">
+          <p className="text-xs uppercase tracking-wide text-slate-400 font-medium">Participant</p>
+          <p className="truncate font-semibold text-slate-800">
+            {selected ? selected.name : 'Select participant'}
+          </p>
+        </div>
+        {selected?.service && (
+          <span className="shrink-0 text-xs font-semibold px-2 py-1 rounded-full hhcs-bg-navy-tint hhcs-text-navy">
+            {selected.service}
+          </span>
+        )}
+        <svg
+          className={`shrink-0 w-5 h-5 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`}
+          fill="none" viewBox="0 0 24 24" stroke="currentColor"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="absolute z-20 mt-2 w-full rounded-xl border border-slate-200 bg-white shadow-lg max-h-80 overflow-y-auto">
+          <div className="p-2 sticky top-0 bg-white border-b border-slate-100">
+            <input
+              autoFocus
+              type="text"
+              inputMode="search"
+              placeholder="Search name or service code..."
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+            />
+          </div>
+          <ul>
+            {filtered.length === 0 && <li className="px-4 py-3 text-sm text-slate-400">No matches</li>}
+            {filtered.map((p) => (
+              <li key={p.id}>
+                <button
+                  type="button"
+                  onClick={() => { selectParticipant(p.id); setOpen(false); setQuery(''); }}
+                  className={`w-full text-left px-4 py-3 flex items-center justify-between gap-2
+                              hover:bg-slate-50 transition-colors
+                              ${String(p.id) === String(selectedId) ? 'hhcs-bg-teal-tint' : ''}`}
+                >
+                  <span className="min-w-0">
+                    <span className="block font-medium text-slate-800 truncate">{p.name}</span>
+                  </span>
+                  <span className="shrink-0 text-xs font-semibold px-2 py-0.5 rounded-full hhcs-bg-navy-tint hhcs-text-navy">
+                    {p.service}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   SIGNATURE PAD
+   ============================================================ */
+function SignaturePad({ onChange, height = 160 }) {
+  const canvasRef = useRef(null);
+  const drawing = useRef(false);
+  const hasDrawn = useRef(false);
+
+  const getPos = (canvas, e) => {
+    const rect = canvas.getBoundingClientRect();
+    const touch = e.touches?.[0];
+    const clientX = touch ? touch.clientX : e.clientX;
+    const clientY = touch ? touch.clientY : e.clientY;
+    return { x: clientX - rect.left, y: clientY - rect.top };
+  };
+
+  const start = (e) => {
+    e.preventDefault();
+    drawing.current = true;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    const { x, y } = getPos(canvas, e);
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+  };
+
+  const move = (e) => {
+    if (!drawing.current) return;
+    e.preventDefault();
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    const { x, y } = getPos(canvas, e);
+    ctx.lineTo(x, y);
+    ctx.strokeStyle = '#1e293b';
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+    hasDrawn.current = true;
+  };
+
+  const end = () => {
+    drawing.current = false;
+    if (hasDrawn.current) onChange(canvasRef.current.toDataURL('image/png'));
+  };
+
+  const clear = () => {
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    hasDrawn.current = false;
+    onChange(null);
+  };
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const resize = () => {
+      const ratio = window.devicePixelRatio || 1;
+      const { width } = canvas.parentElement.getBoundingClientRect();
+      canvas.width = width * ratio;
+      canvas.height = height * ratio;
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
+      canvas.getContext('2d').scale(ratio, ratio);
+    };
+    resize();
+    window.addEventListener('resize', resize);
+    return () => window.removeEventListener('resize', resize);
+  }, [height]);
+
+  return (
+    <div>
+      <canvas
+        ref={canvasRef}
+        className="w-full rounded-lg border-2 border-dashed border-slate-300 bg-slate-50 touch-none"
+        onMouseDown={start} onMouseMove={move} onMouseUp={end} onMouseLeave={end}
+        onTouchStart={start} onTouchMove={move} onTouchEnd={end}
+      />
+      <div className="flex justify-between items-center mt-1">
+        <span className="text-xs text-slate-400">Sign with finger or stylus</span>
+        <button type="button" onClick={clear} className="text-xs font-medium hhcs-text-teal">
+          Clear
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const STATUS_STYLES = {
+  pending: 'bg-slate-100 text-slate-500',
+  given: 'bg-emerald-100 text-emerald-700',
+  missed: 'bg-red-100 text-red-700',
+  refused: 'bg-amber-100 text-amber-700',
+};
+
+/* ============================================================
+   MEDICATION SIGN-OFF — dynamic dose times, staff attribution.
+   ============================================================ */
+function MedicationSignOff() {
+  const { selectedParticipant, selectedId } = useParticipant();
+  const { staffName } = useStaff();
+  const [signoffsByParticipant, setSignoffsByParticipant] = useState(MOCK_SIGNOFFS);
+  const [activeRow, setActiveRow] = useState(null);
+  const [signature, setSignature] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [pendingStatus, setPendingStatus] = useState('given');
+  const [notes, setNotes] = useState('');
+  const [addOpen, setAddOpen] = useState(false);
+  const [newDose, setNewDose] = useState({ medication_name: '', scheduled_time: '08:00' });
+  const [date, setDate] = useState(TODAY_STR); // navigable — defaults to today, auto-calculated above
+
+  const allSignoffs = signoffsByParticipant[selectedId] || [];
+  const signoffs = allSignoffs.filter((s) => s.scheduled_date === date);
+
+  // Reset any open panels when the selected participant or date changes, so a
+  // stale row from a different participant/day can't stay expanded.
+  useEffect(() => {
+    setActiveRow(null);
+    setAddOpen(false);
+    setSignature(null);
+    setNotes('');
+  }, [selectedId, date]);
+
+  const submitSignOff = useCallback(
+    async (signoffId) => {
+      if (!requireStaffName(staffName)) return;
+      if (pendingStatus === 'given' && !signature) {
+        alert('A signature is required to confirm medication was given.');
+        return;
+      }
+      setSubmitting(true);
+      await new Promise((r) => setTimeout(r, 350)); // simulated network latency
+      setSignoffsByParticipant((prev) => ({
+        ...prev,
+        [selectedId]: (prev[selectedId] || []).map((s) =>
+          s.id === signoffId ? { ...s, status: pendingStatus, recorded_by: staffName.trim() } : s
+        ),
+      }));
+      setActiveRow(null);
+      setSignature(null);
+      setNotes('');
+      setPendingStatus('given');
+      setSubmitting(false);
+    },
+    [pendingStatus, signature, selectedId, staffName]
+  );
+
+  function addDose() {
+    if (!requireStaffName(staffName)) return;
+    if (!newDose.medication_name.trim()) {
+      alert('Enter a medication name.');
+      return;
+    }
+    const entry = {
+      id: `new-${Date.now()}`,
+      medication_name: newDose.medication_name.trim(),
+      scheduled_date: date,
+      scheduled_time: newDose.scheduled_time,
+      status: 'pending',
+      recorded_by: '',
+      added_by: staffName.trim(),
+    };
+    setSignoffsByParticipant((prev) => ({
+      ...prev,
+      [selectedId]: [...(prev[selectedId] || []), entry].sort((a, b) => a.scheduled_time.localeCompare(b.scheduled_time)),
+    }));
+    setNewDose({ medication_name: '', scheduled_time: '08:00' });
+    setAddOpen(false);
+  }
+
+  function removeDose(signoffId) {
+    setSignoffsByParticipant((prev) => ({
+      ...prev,
+      [selectedId]: (prev[selectedId] || []).filter((s) => s.id !== signoffId),
+    }));
+  }
+
+  if (!selectedParticipant) {
+    return <p className="text-slate-400 text-sm">Select a participant to view medication sign-offs.</p>;
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <h2 className="font-semibold text-slate-800">
+          Medication Sign-Off — {selectedParticipant.name}
+        </h2>
+      </div>
+
+      <div className="flex items-center justify-between rounded-lg hhcs-bg-navy-tint px-2 py-1.5">
+        <button
+          type="button"
+          onClick={() => setDate((d) => addDays(d, -1))}
+          className="px-2 py-1 hhcs-text-navy font-bold"
+          aria-label="Previous day"
+        >
+          ‹
+        </button>
+        <div className="text-center">
+          <p className="text-xs font-semibold hhcs-text-navy">
+            {FULL_DATE_LABEL(date)}{date === TODAY_STR ? ' (Today)' : ''}
+          </p>
+          {date !== TODAY_STR && (
+            <button
+              type="button"
+              onClick={() => setDate(TODAY_STR)}
+              className="text-xs hhcs-text-teal font-medium underline"
+            >
+              Back to today
+            </button>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => setDate((d) => addDays(d, 1))}
+          className="px-2 py-1 hhcs-text-navy font-bold"
+          aria-label="Next day"
+        >
+          ›
+        </button>
+      </div>
+
+      <div className="space-y-2">
+        {signoffs.map((s) => (
+          <div key={s.id} className="rounded-xl border border-slate-200 overflow-hidden">
+            <button
+              type="button"
+              onClick={() => s.status === 'pending' && setActiveRow(activeRow === s.id ? null : s.id)}
+              disabled={s.status !== 'pending'}
+              className="w-full flex items-center justify-between gap-3 px-4 py-3 bg-white disabled:cursor-default"
+            >
+              <div className="text-left min-w-0">
+                <p className="font-medium text-slate-800 truncate">{s.medication_name}</p>
+                <p className="text-xs text-slate-400">
+                  {s.scheduled_date} · {s.scheduled_time}
+                  {s.recorded_by
+                    ? ` · signed by ${s.recorded_by}`
+                    : s.added_by ? ` · added by ${s.added_by}` : ''}
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className={`text-xs font-semibold px-2 py-1 rounded-full ${STATUS_STYLES[s.status]}`}>
+                  {s.status}
+                </span>
+                {s.status === 'pending' && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => { e.stopPropagation(); removeDose(s.id); }}
+                    className="text-xs text-slate-300 hover:text-red-500"
+                    title="Remove this scheduled dose"
+                  >
+                    ✕
+                  </span>
+                )}
+              </div>
+            </button>
+
+            {activeRow === s.id && (
+              <div className="p-4 border-t border-slate-100 bg-slate-50 space-y-3">
+                <div className="flex gap-2">
+                  {['given', 'refused', 'missed'].map((opt) => (
+                    <button
+                      key={opt}
+                      type="button"
+                      onClick={() => setPendingStatus(opt)}
+                      className={`flex-1 text-sm font-medium py-2 rounded-lg border
+                        ${pendingStatus === opt ? 'hhcs-chip-active' : 'bg-white text-slate-600 border-slate-200'}`}
+                    >
+                      {opt.charAt(0).toUpperCase() + opt.slice(1)}
+                    </button>
+                  ))}
+                </div>
+
+                <textarea
+                  placeholder="Notes (optional, required for refused/missed)"
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                  rows={2}
+                />
+
+                {pendingStatus === 'given' && <SignaturePad onChange={setSignature} />}
+
+                <button
+                  type="button"
+                  disabled={submitting || !staffName.trim()}
+                  onClick={() => submitSignOff(s.id)}
+                  className="hhcs-btn-primary w-full font-semibold py-3 rounded-lg disabled:cursor-not-allowed"
+                >
+                  {submitting ? 'Saving...' : 'Confirm Sign-Off'}
+                </button>
+                {!staffName.trim() && (
+                  <p className="text-xs text-red-600 font-medium">
+                    Enter your name or initials at the top of the page to save.
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+        {signoffs.length === 0 && (
+          <p className="text-sm text-slate-400 text-center py-4">No medications scheduled yet.</p>
+        )}
+      </div>
+
+      {/* Dynamic dose-time entry — support workers add doses on the fly rather than
+          being limited to hardcoded schedule rows. */}
+      {addOpen ? (
+        <div className="rounded-xl border hhcs-border-teal bg-white p-4 space-y-3">
+          <p className="text-sm font-semibold text-slate-700">Add medication time</p>
+          <input
+            type="text"
+            placeholder="Medication name and dose, e.g. Panadol 500mg"
+            value={newDose.medication_name}
+            onChange={(e) => setNewDose((d) => ({ ...d, medication_name: e.target.value }))}
+            className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+          />
+          <div className="flex gap-2 items-center">
+            <label className="text-xs font-medium text-slate-500 shrink-0">Time</label>
+            <input
+              type="time"
+              value={newDose.scheduled_time}
+              onChange={(e) => setNewDose((d) => ({ ...d, scheduled_time: e.target.value }))}
+              className="hhcs-input rounded-lg border border-slate-200 px-3 py-2 text-sm"
+            />
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setAddOpen(false)}
+              className="flex-1 py-2 rounded-lg border border-slate-300 text-slate-600 text-sm font-medium"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={addDose}
+              className="hhcs-btn-primary flex-1 py-2 rounded-lg text-sm font-semibold"
+            >
+              Add
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setAddOpen(true)}
+          className="w-full py-2.5 rounded-lg border-2 border-dashed hhcs-border-teal hhcs-text-teal text-sm font-semibold"
+        >
+          + Add medication time
+        </button>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   FOOD DIARY — weekly grid, staff attribution on save.
+   ============================================================ */
+function FoodDiaryGrid() {
+  const { selectedParticipant, selectedId } = useParticipant();
+  const { staffName } = useStaff();
+  const [diaryByParticipant, setDiaryByParticipant] = useState(MOCK_FOOD_DIARY);
+  const [activeCell, setActiveCell] = useState(null);
+  const [draft, setDraft] = useState({ description: '', fluids_ml: '', notes: '' });
+  const [weekOffset, setWeekOffset] = useState(0); // 0 = this week, -1 = last week, +1 = next week...
+
+  const weekStartDate = useMemo(() => addDays(CURRENT_WEEK_START, weekOffset * 7), [weekOffset]);
+  const weekDates = useMemo(() => generateWeekDates(weekStartDate), [weekStartDate]);
+  const participantDiary = diaryByParticipant[selectedId] || {};
+
+  useEffect(() => { setActiveCell(null); }, [selectedId, weekOffset]);
+
+  function openCell(date, mealKey) {
+    const existing = participantDiary[date]?.[mealKey] || { description: '', fluids_ml: '', notes: '' };
+    setDraft({
+      description: existing.description || '',
+      fluids_ml: existing.fluids_ml ?? '',
+      notes: existing.notes || '',
+    });
+    setActiveCell({ date, mealKey });
+  }
+
+  function saveCell() {
+    if (!requireStaffName(staffName)) return;
+    const { date, mealKey } = activeCell;
+    setDiaryByParticipant((prev) => {
+      const participantData = { ...(prev[selectedId] || {}) };
+      const dayData = { ...(participantData[date] || {}) };
+      dayData[mealKey] = {
+        description: draft.description,
+        fluids_ml: mealKey === 'fluids' ? Number(draft.fluids_ml) || 0 : undefined,
+        notes: draft.notes,
+        recorded_by: staffName.trim(),
+      };
+      participantData[date] = dayData;
+      return { ...prev, [selectedId]: participantData };
+    });
+    setActiveCell(null);
+  }
+
+  function cellSummary(date, mealKey) {
+    const entry = participantDiary[date]?.[mealKey];
+    if (!entry) return null;
+    const text = mealKey === 'fluids' ? (entry.fluids_ml ? `${entry.fluids_ml}ml` : null) : (entry.description || null);
+    return text ? { text, recordedBy: entry.recorded_by } : null;
+  }
+
+  if (!selectedParticipant) {
+    return <p className="text-slate-400 text-sm">Select a participant to view their food diary.</p>;
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <h2 className="font-semibold text-slate-800">Food Diary — {selectedParticipant.name}</h2>
+      </div>
+
+      <div className="flex items-center justify-between rounded-lg hhcs-bg-navy-tint px-2 py-1.5">
+        <button
+          type="button"
+          onClick={() => setWeekOffset((o) => o - 1)}
+          className="px-2 py-1 hhcs-text-navy font-bold"
+          aria-label="Previous week"
+        >
+          ‹
+        </button>
+        <div className="text-center">
+          <p className="text-xs font-semibold hhcs-text-navy">
+            Week of {FULL_DATE_LABEL(weekStartDate)}
+          </p>
+          {weekOffset !== 0 && (
+            <button
+              type="button"
+              onClick={() => setWeekOffset(0)}
+              className="text-xs hhcs-text-teal font-medium underline"
+            >
+              Back to this week
+            </button>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => setWeekOffset((o) => o + 1)}
+          className="px-2 py-1 hhcs-text-navy font-bold"
+          aria-label="Next week"
+        >
+          ›
+        </button>
+      </div>
+
+      <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm border-collapse">
+            <thead>
+              <tr>
+                <th className="sticky left-0 bg-white z-10 text-left px-3 py-2 text-xs font-semibold hhcs-text-navy border-b border-r border-slate-100 w-24">
+                  &nbsp;
+                </th>
+                {weekDates.map((d) => (
+                  <th key={d} className="px-3 py-2 text-xs font-semibold hhcs-text-navy border-b border-slate-100 whitespace-nowrap">
+                    {DAY_LABEL(d)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {MEAL_TYPES.map((meal) => (
+                <tr key={meal.key}>
+                  <td className="sticky left-0 bg-white z-10 px-3 py-2 text-xs font-semibold text-slate-600 border-r border-b border-slate-100 whitespace-nowrap">
+                    {meal.label}
+                  </td>
+                  {weekDates.map((d) => {
+                    const summary = cellSummary(d, meal.key);
+                    const isActive = activeCell?.date === d && activeCell?.mealKey === meal.key;
+                    return (
+                      <td key={d} className="border-b border-slate-100 p-1">
+                        <button
+                          type="button"
+                          onClick={() => openCell(d, meal.key)}
+                          className={`w-24 h-14 rounded-lg px-2 py-1 text-left text-xs border
+                            ${isActive ? 'hhcs-border-teal hhcs-bg-teal-tint' : 'border-transparent hover:bg-slate-50'}
+                            ${summary ? 'text-slate-700' : 'text-slate-300'}`}
+                        >
+                          <span className="block truncate">{summary ? summary.text : 'Tap to log'}</span>
+                          {summary?.recordedBy && (
+                            <span className="block text-xs hhcs-text-teal truncate">— {summary.recordedBy}</span>
+                          )}
+                        </button>
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {activeCell && (
+        <div className="rounded-xl border hhcs-border-teal hhcs-bg-teal-tint p-4 space-y-3">
+          <p className="text-sm font-semibold text-slate-700">
+            {MEAL_TYPES.find((m) => m.key === activeCell.mealKey)?.label} · {DAY_LABEL(activeCell.date)}
+          </p>
+
+          {activeCell.mealKey === 'fluids' ? (
+            <div>
+              <label className="text-xs font-medium text-slate-500">Fluids (ml)</label>
+              <input
+                type="number"
+                inputMode="numeric"
+                value={draft.fluids_ml}
+                onChange={(e) => setDraft((d) => ({ ...d, fluids_ml: e.target.value }))}
+                className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm mt-1"
+                placeholder="e.g. 750"
+              />
+            </div>
+          ) : (
+            <div>
+              <label className="text-xs font-medium text-slate-500">What was offered / eaten</label>
+              <input
+                type="text"
+                value={draft.description}
+                onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))}
+                className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm mt-1"
+                placeholder="e.g. Toast with eggs, ate all"
+              />
+            </div>
+          )}
+
+          <div>
+            <label className="text-xs font-medium text-slate-500">Notes</label>
+            <textarea
+              value={draft.notes}
+              onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))}
+              rows={2}
+              className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm mt-1"
+              placeholder="Optional notes"
+            />
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setActiveCell(null)}
+              className="flex-1 py-2 rounded-lg border border-slate-300 text-slate-600 text-sm font-medium"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={saveCell}
+              disabled={!staffName.trim()}
+              className="hhcs-btn-primary flex-1 py-2 rounded-lg text-sm font-semibold disabled:cursor-not-allowed"
+            >
+              Save
+            </button>
+          </div>
+          {!staffName.trim() && (
+            <p className="text-xs text-red-600 font-medium">
+              Enter your name or initials at the top of the page to save.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   SLEEP LOG — dynamic overnight check times per date, staff
+   attribution, editable/removable slots.
+   ============================================================ */
+const SLEEP_STATUS_STYLES = {
+  pending: 'bg-slate-100 text-slate-500',
+  asleep: 'bg-indigo-100 text-indigo-700',
+  awake: 'bg-amber-100 text-amber-700',
+  checked: 'bg-emerald-100 text-emerald-700',
+};
+
+function formatSlot(time24) {
+  const [h, m] = time24.split(':').map(Number);
+  const period = h >= 12 ? 'PM' : 'AM';
+  const hour12 = h % 12 === 0 ? 12 : h % 12;
+  return `${hour12}:${String(m).padStart(2, '0')} ${period}`;
+}
+
+// No participant sleeps on a fixed schedule, so a new day starts with
+// no check times at all — the worker adds exactly the hours that
+// applied to that participant that day (could be 7pm-7am, could be a
+// single 2am check, could be a daytime nap).
+function defaultDayLogs() {
+  return [];
+}
+
+function SleepLog() {
+  const { selectedParticipant, selectedId } = useParticipant();
+  const { staffName } = useStaff();
+  const [logsByParticipant, setLogsByParticipant] = useState(MOCK_SLEEP_LOGS);
+  const [date, setDate] = useState(TODAY_STR);
+  const [weekOffset, setWeekOffset] = useState(0);
+  const [activeSlot, setActiveSlot] = useState(null);
+  const [draft, setDraft] = useState({ status: 'asleep', how_awoken: AWOKEN_OPTIONS[0], mood: MOOD_OPTIONS[0], notes: '', time_slot: '' });
+  const [addOpen, setAddOpen] = useState(false);
+  const [newTime, setNewTime] = useState('12:00');
+
+  const weekStartDate = useMemo(() => addDays(CURRENT_WEEK_START, weekOffset * 7), [weekOffset]);
+  const weekDates = useMemo(() => generateWeekDates(weekStartDate), [weekStartDate]);
+  const dayLogs = logsByParticipant[selectedId]?.[date] || defaultDayLogs();
+
+  useEffect(() => {
+    setActiveSlot(null);
+    setAddOpen(false);
+  }, [selectedId, date]);
+
+  function toggleSlot(slot) {
+    if (activeSlot === slot.id) {
+      setActiveSlot(null);
+      return;
+    }
+    setDraft({
+      status: slot.status === 'pending' ? 'asleep' : slot.status,
+      how_awoken: slot.how_awoken || AWOKEN_OPTIONS[0],
+      mood: slot.mood || MOOD_OPTIONS[0],
+      notes: slot.notes || '',
+      time_slot: slot.time_slot,
+    });
+    setActiveSlot(slot.id);
+  }
+
+  function saveSlot() {
+    if (!requireStaffName(staffName)) return;
+    setLogsByParticipant((prev) => {
+      const participantLogs = { ...(prev[selectedId] || {}) };
+      const existingDay = participantLogs[date] || defaultDayLogs();
+      const updatedDay = existingDay
+        .map((s) => (s.id === activeSlot ? { ...s, ...draft, recorded_by: staffName.trim() } : s))
+        .sort((a, b) => a.time_slot.localeCompare(b.time_slot));
+      participantLogs[date] = updatedDay;
+      return { ...prev, [selectedId]: participantLogs };
+    });
+    setActiveSlot(null);
+  }
+
+  function removeSlot(slotId) {
+    setLogsByParticipant((prev) => {
+      const participantLogs = { ...(prev[selectedId] || {}) };
+      const existingDay = participantLogs[date] || defaultDayLogs();
+      participantLogs[date] = existingDay.filter((s) => s.id !== slotId);
+      return { ...prev, [selectedId]: participantLogs };
+    });
+    if (activeSlot === slotId) setActiveSlot(null);
+  }
+
+  function addSlot() {
+    if (!requireStaffName(staffName)) return;
+    setLogsByParticipant((prev) => {
+      const participantLogs = { ...(prev[selectedId] || {}) };
+      const existingDay = participantLogs[date] || defaultDayLogs();
+      const entry = {
+        id: `new-${Date.now()}`, time_slot: newTime, status: 'pending', how_awoken: '', mood: '', notes: '', recorded_by: '', added_by: staffName.trim(),
+      };
+      participantLogs[date] = [...existingDay, entry].sort((a, b) => a.time_slot.localeCompare(b.time_slot));
+      return { ...prev, [selectedId]: participantLogs };
+    });
+    setAddOpen(false);
+  }
+
+  if (!selectedParticipant) {
+    return <p className="text-slate-400 text-sm">Select a participant to view their sleep log.</p>;
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <h2 className="font-semibold text-slate-800">Sleep Log — {selectedParticipant.name}</h2>
+      </div>
+
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => setWeekOffset((o) => o - 1)}
+          className="px-1.5 py-1 hhcs-text-navy font-bold shrink-0"
+          aria-label="Previous week"
+        >
+          ‹
+        </button>
+        <div className="flex gap-1.5 overflow-x-auto pb-1 flex-1">
+          {weekDates.map((d) => (
+            <button
+              key={d}
+              type="button"
+              onClick={() => setDate(d)}
+              className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium border relative
+                ${d === date ? 'hhcs-chip-active' : 'bg-white text-slate-600 border-slate-200'}
+                ${d === TODAY_STR && d !== date ? 'hhcs-border-teal' : ''}`}
+            >
+              {DAY_LABEL(d)}{d === TODAY_STR ? ' •' : ''}
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={() => setWeekOffset((o) => o + 1)}
+          className="px-1.5 py-1 hhcs-text-navy font-bold shrink-0"
+          aria-label="Next week"
+        >
+          ›
+        </button>
+      </div>
+      {weekOffset !== 0 && (
+        <button
+          type="button"
+          onClick={() => { setWeekOffset(0); setDate(TODAY_STR); }}
+          className="text-xs hhcs-text-teal font-medium underline"
+        >
+          Back to today
+        </button>
+      )}
+
+      {dayLogs.length === 0 && (
+        <p className="text-sm text-slate-400 text-center py-4">
+          No check times logged for {DAY_LABEL(date)} yet — add the hours below.
+        </p>
+      )}
+
+      <div className="space-y-2">
+        {dayLogs.map((slot) => (
+          <div key={slot.id} className="rounded-xl border border-slate-200 overflow-hidden">
+            <button
+              type="button"
+              onClick={() => toggleSlot(slot)}
+              className="w-full flex items-center justify-between gap-3 px-4 py-3 bg-white"
+            >
+              <div className="text-left">
+                <p className="font-medium text-slate-800 text-sm">{formatSlot(slot.time_slot)}</p>
+                {slot.recorded_by
+                  ? <p className="text-xs hhcs-text-teal">by {slot.recorded_by}</p>
+                  : slot.added_by ? <p className="text-xs hhcs-text-teal">added by {slot.added_by}</p> : null}
+              </div>
+              <div className="flex items-center gap-2">
+                {slot.mood && <span className="text-xs text-slate-400 hidden sm:inline">{slot.mood}</span>}
+                <span className={`text-xs font-semibold px-2 py-1 rounded-full ${SLEEP_STATUS_STYLES[slot.status]}`}>
+                  {slot.status}
+                </span>
+                <span
+                  role="button"
+                  tabIndex={0}
+                  onClick={(e) => { e.stopPropagation(); removeSlot(slot.id); }}
+                  className="text-xs text-slate-300 hover:text-red-500"
+                  title="Remove this check time"
+                >
+                  ✕
+                </span>
+              </div>
+            </button>
+
+            {activeSlot === slot.id && (
+              <div className="p-4 border-t border-slate-100 bg-slate-50 space-y-3">
+                <div className="flex gap-2 items-center">
+                  <label className="text-xs font-medium text-slate-500 shrink-0">Check time</label>
+                  <input
+                    type="time"
+                    value={draft.time_slot}
+                    onChange={(e) => setDraft((d) => ({ ...d, time_slot: e.target.value }))}
+                    className="hhcs-input rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                  />
+                </div>
+
+                <div className="flex gap-2">
+                  {['asleep', 'awake', 'checked'].map((opt) => (
+                    <button
+                      key={opt}
+                      type="button"
+                      onClick={() => setDraft((d) => ({ ...d, status: opt }))}
+                      className={`flex-1 text-sm font-medium py-2 rounded-lg border
+                        ${draft.status === opt ? 'hhcs-chip-active' : 'bg-white text-slate-600 border-slate-200'}`}
+                    >
+                      {opt.charAt(0).toUpperCase() + opt.slice(1)}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-xs font-medium text-slate-500">How awoken</label>
+                    <select
+                      value={draft.how_awoken}
+                      onChange={(e) => setDraft((d) => ({ ...d, how_awoken: e.target.value }))}
+                      className="hhcs-input w-full rounded-lg border border-slate-200 px-2 py-2 text-sm mt-1"
+                    >
+                      {AWOKEN_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-slate-500">Mood</label>
+                    <select
+                      value={draft.mood}
+                      onChange={(e) => setDraft((d) => ({ ...d, mood: e.target.value }))}
+                      className="hhcs-input w-full rounded-lg border border-slate-200 px-2 py-2 text-sm mt-1"
+                    >
+                      {MOOD_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                <textarea
+                  placeholder="Notes"
+                  value={draft.notes}
+                  onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))}
+                  rows={2}
+                  className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                />
+
+                <button
+                  type="button"
+                  onClick={saveSlot}
+                  disabled={!staffName.trim()}
+                  className="hhcs-btn-primary w-full font-semibold py-2.5 rounded-lg disabled:cursor-not-allowed"
+                >
+                  Save Check
+                </button>
+                {!staffName.trim() && (
+                  <p className="text-xs text-red-600 font-medium">
+                    Enter your name or initials at the top of the page to save.
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Dynamic check-time entry — not locked to the default overnight schedule. */}
+      {addOpen ? (
+        <div className="rounded-xl border hhcs-border-teal bg-white p-4 space-y-3">
+          <p className="text-sm font-semibold text-slate-700">Add check time</p>
+          <input
+            type="time"
+            value={newTime}
+            onChange={(e) => setNewTime(e.target.value)}
+            className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+          />
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setAddOpen(false)}
+              className="flex-1 py-2 rounded-lg border border-slate-300 text-slate-600 text-sm font-medium"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={addSlot}
+              className="hhcs-btn-primary flex-1 py-2 rounded-lg text-sm font-semibold"
+            >
+              Add
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setAddOpen(true)}
+          className="w-full py-2.5 rounded-lg border-2 border-dashed hhcs-border-teal hhcs-text-teal text-sm font-semibold"
+        >
+          + Add check time
+        </button>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   PROGRESS NOTES — free-text shift notes per participant,
+   categorized, staff attribution, newest first.
+   ============================================================ */
+const PROGRESS_CATEGORIES = ['General', 'Behaviour', 'Health', 'Community Access', 'Goals & Skill Building', 'Social/Emotional'];
+
+function ProgressNotes() {
+  const { selectedParticipant, selectedId } = useParticipant();
+  const { staffName } = useStaff();
+  const [notes, setNotes] = useState([]);
+  const [loadingNotes, setLoadingNotes] = useState(false);
+  const [formOpen, setFormOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [draft, setDraft] = useState({ date: TODAY_STR, category: PROGRESS_CATEGORIES[0], note: '' });
+
+  const loadNotes = useCallback(async () => {
+    if (!selectedId) return;
+    setLoadingNotes(true);
+    const { data, error } = await supabase
+      .from('progress_notes')
+      .select('*')
+      .eq('participant_id', selectedId)
+      .order('date', { ascending: false })
+      .order('time', { ascending: false });
+    if (!error) setNotes(data || []);
+    setLoadingNotes(false);
+  }, [selectedId]);
+
+  useEffect(() => {
+    setFormOpen(false);
+    setDraft({ date: TODAY_STR, category: PROGRESS_CATEGORIES[0], note: '' });
+    loadNotes();
+  }, [selectedId, loadNotes]);
+
+  async function saveNote() {
+    if (!requireStaffName(staffName)) return;
+    if (!draft.note.trim()) {
+      alert('Please write a note before saving.');
+      return;
+    }
+    setSubmitting(true);
+    const { error } = await supabase.from('progress_notes').insert({
+      participant_id: selectedId,
+      date: draft.date,
+      time: new Date().toTimeString().slice(0, 8),
+      category: draft.category,
+      note: draft.note.trim(),
+      recorded_by: staffName.trim(),
+    });
+    if (error) {
+      alert('Could not save note: ' + error.message);
+    } else {
+      await loadNotes();
+      setDraft({ date: TODAY_STR, category: PROGRESS_CATEGORIES[0], note: '' });
+      setFormOpen(false);
+    }
+    setSubmitting(false);
+  }
+
+  async function removeNote(id) {
+    const { error } = await supabase.from('progress_notes').delete().eq('id', id);
+    if (!error) setNotes((prev) => prev.filter((n) => n.id !== id));
+  }
+
+  if (!selectedParticipant) {
+    return <p className="text-slate-400 text-sm">Select a participant to view progress notes.</p>;
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <h2 className="font-semibold text-slate-800">Progress Notes — {selectedParticipant.name}</h2>
+      </div>
+
+      {formOpen ? (
+        <div className="rounded-xl border hhcs-border-teal bg-white p-4 space-y-3">
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs font-medium text-slate-500">Date</label>
+              <input
+                type="date"
+                value={draft.date}
+                onChange={(e) => setDraft((d) => ({ ...d, date: e.target.value }))}
+                className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm mt-1"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-500">Category</label>
+              <select
+                value={draft.category}
+                onChange={(e) => setDraft((d) => ({ ...d, category: e.target.value }))}
+                className="hhcs-input w-full rounded-lg border border-slate-200 px-2 py-2 text-sm mt-1"
+              >
+                {PROGRESS_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-slate-500">Note</label>
+            <textarea
+              value={draft.note}
+              onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))}
+              rows={5}
+              placeholder="What happened during the shift, how the participant engaged, any observations..."
+              className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm mt-1"
+            />
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setFormOpen(false)}
+              className="flex-1 py-2 rounded-lg border border-slate-300 text-slate-600 text-sm font-medium"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={saveNote}
+              disabled={submitting || !staffName.trim()}
+              className="hhcs-btn-primary flex-1 py-2 rounded-lg text-sm font-semibold disabled:cursor-not-allowed"
+            >
+              {submitting ? 'Saving...' : 'Save Note'}
+            </button>
+          </div>
+          {!staffName.trim() && (
+            <p className="text-xs text-red-600 font-medium">
+              Enter your name or initials at the top of the page to save.
+            </p>
+          )}
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setFormOpen(true)}
+          className="w-full py-2.5 rounded-lg border-2 border-dashed hhcs-border-teal hhcs-text-teal text-sm font-semibold"
+        >
+          + Write a progress note
+        </button>
+      )}
+
+      <div className="space-y-2">
+        {notes.length === 0 && (
+          <p className="text-sm text-slate-400 text-center py-4">No progress notes recorded yet.</p>
+        )}
+        {notes.map((n) => (
+          <div key={n.id} className="rounded-xl border border-slate-200 bg-white p-4">
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <span className="text-xs font-semibold px-2 py-1 rounded-full hhcs-bg-navy-tint hhcs-text-navy">
+                {n.category}
+              </span>
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={() => removeNote(n.id)}
+                className="text-xs text-slate-300 hover:text-red-500"
+                title="Remove this note"
+              >
+                ✕
+              </span>
+            </div>
+            <p className="text-sm text-slate-700 whitespace-pre-wrap">{n.note}</p>
+            <p className="text-xs text-slate-400 mt-2">
+              {FULL_DATE_LABEL(n.date)} · {n.time?.slice(0, 5)} · by {n.recorded_by}
+            </p>
+          </div>
+        ))}
+        {loadingNotes && <p className="text-xs text-slate-400 text-center">Loading...</p>}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   INCIDENT REPORT — structured incident capture per participant,
+   severity-tagged, staff attribution.
+   ============================================================ */
+const INCIDENT_TYPES = ['Behavioural', 'Medical', 'Injury', 'Medication Error', 'Property Damage', 'Environmental/Safety', 'Complaint', 'Other'];
+const INCIDENT_SEVERITY = ['Low', 'Medium', 'High', 'Critical'];
+const SEVERITY_STYLES = {
+  Low: 'bg-slate-100 text-slate-600',
+  Medium: 'bg-amber-100 text-amber-700',
+  High: 'bg-orange-100 text-orange-700',
+  Critical: 'bg-red-100 text-red-700',
+};
+
+function blankIncidentDraft() {
+  return {
+    date: TODAY_STR,
+    time: new Date().toTimeString().slice(0, 5),
+    type: INCIDENT_TYPES[0],
+    severity: 'Low',
+    description: '',
+    action_taken: '',
+    witnesses: '',
+    reported_to: '',
+    follow_up_required: false,
+  };
+}
+
+function IncidentReport() {
+  const { selectedParticipant, selectedId } = useParticipant();
+  const { staffName } = useStaff();
+  const [incidents, setIncidents] = useState([]);
+  const [loadingIncidents, setLoadingIncidents] = useState(false);
+  const [formOpen, setFormOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [draft, setDraft] = useState(blankIncidentDraft());
+
+  const loadIncidents = useCallback(async () => {
+    if (!selectedId) return;
+    setLoadingIncidents(true);
+    const { data, error } = await supabase
+      .from('incidents')
+      .select('*')
+      .eq('participant_id', selectedId)
+      .order('date', { ascending: false })
+      .order('time', { ascending: false });
+    if (!error) setIncidents(data || []);
+    setLoadingIncidents(false);
+  }, [selectedId]);
+
+  useEffect(() => {
+    setFormOpen(false);
+    setDraft(blankIncidentDraft());
+    loadIncidents();
+  }, [selectedId, loadIncidents]);
+
+  async function saveIncident() {
+    if (!requireStaffName(staffName)) return;
+    if (!draft.description.trim()) {
+      alert('Please describe what happened before saving.');
+      return;
+    }
+    setSubmitting(true);
+    const { error } = await supabase.from('incidents').insert({
+      participant_id: selectedId,
+      date: draft.date,
+      time: draft.time,
+      type: draft.type,
+      severity: draft.severity,
+      description: draft.description.trim(),
+      action_taken: draft.action_taken.trim(),
+      witnesses: draft.witnesses.trim(),
+      reported_to: draft.reported_to.trim(),
+      follow_up_required: draft.follow_up_required,
+      recorded_by: staffName.trim(),
+    });
+    if (error) {
+      alert('Could not save incident: ' + error.message);
+    } else {
+      await loadIncidents();
+      setDraft(blankIncidentDraft());
+      setFormOpen(false);
+    }
+    setSubmitting(false);
+  }
+
+  async function removeIncident(id) {
+    const { error } = await supabase.from('incidents').delete().eq('id', id);
+    if (!error) setIncidents((prev) => prev.filter((i) => i.id !== id));
+  }
+
+  if (!selectedParticipant) {
+    return <p className="text-slate-400 text-sm">Select a participant to view or report incidents.</p>;
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <h2 className="font-semibold text-slate-800">Incident Report — {selectedParticipant.name}</h2>
+      </div>
+
+      {formOpen ? (
+        <div className="rounded-xl border-2 hhcs-border-teal bg-white p-4 space-y-3">
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs font-medium text-slate-500">Date</label>
+              <input
+                type="date"
+                value={draft.date}
+                onChange={(e) => setDraft((d) => ({ ...d, date: e.target.value }))}
+                className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm mt-1"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-500">Time</label>
+              <input
+                type="time"
+                value={draft.time}
+                onChange={(e) => setDraft((d) => ({ ...d, time: e.target.value }))}
+                className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm mt-1"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs font-medium text-slate-500">Incident type</label>
+              <select
+                value={draft.type}
+                onChange={(e) => setDraft((d) => ({ ...d, type: e.target.value }))}
+                className="hhcs-input w-full rounded-lg border border-slate-200 px-2 py-2 text-sm mt-1"
+              >
+                {INCIDENT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-500">Severity</label>
+              <select
+                value={draft.severity}
+                onChange={(e) => setDraft((d) => ({ ...d, severity: e.target.value }))}
+                className="hhcs-input w-full rounded-lg border border-slate-200 px-2 py-2 text-sm mt-1"
+              >
+                {INCIDENT_SEVERITY.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-slate-500">What happened</label>
+            <textarea
+              value={draft.description}
+              onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))}
+              rows={4}
+              placeholder="Describe the incident factually: what happened, where, who was involved..."
+              className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm mt-1"
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-slate-500">Action taken</label>
+            <textarea
+              value={draft.action_taken}
+              onChange={(e) => setDraft((d) => ({ ...d, action_taken: e.target.value }))}
+              rows={3}
+              placeholder="Immediate action taken, first aid given, who was contacted..."
+              className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm mt-1"
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-slate-500">Witnesses (if any)</label>
+            <input
+              type="text"
+              value={draft.witnesses}
+              onChange={(e) => setDraft((d) => ({ ...d, witnesses: e.target.value }))}
+              placeholder="Names of anyone who witnessed the incident"
+              className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm mt-1"
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-slate-500">Reported to</label>
+            <input
+              type="text"
+              value={draft.reported_to}
+              onChange={(e) => setDraft((d) => ({ ...d, reported_to: e.target.value }))}
+              placeholder="e.g. Team Leader, CEO, NDIS Commission"
+              className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm mt-1"
+            />
+          </div>
+
+          <label className="flex items-center gap-2 text-sm text-slate-600">
+            <input
+              type="checkbox"
+              checked={draft.follow_up_required}
+              onChange={(e) => setDraft((d) => ({ ...d, follow_up_required: e.target.checked }))}
+              className="rounded border-slate-300"
+            />
+            Follow-up required
+          </label>
+
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => { setFormOpen(false); setDraft(blankIncidentDraft()); }}
+              className="flex-1 py-2 rounded-lg border border-slate-300 text-slate-600 text-sm font-medium"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={saveIncident}
+              disabled={submitting || !staffName.trim()}
+              className="hhcs-btn-primary flex-1 py-2 rounded-lg text-sm font-semibold disabled:cursor-not-allowed"
+            >
+              {submitting ? 'Saving...' : 'Submit Incident Report'}
+            </button>
+          </div>
+          {!staffName.trim() && (
+            <p className="text-xs text-red-600 font-medium">
+              Enter your name or initials at the top of the page to save.
+            </p>
+          )}
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setFormOpen(true)}
+          className="w-full py-2.5 rounded-lg border-2 border-dashed border-red-300 text-red-600 text-sm font-semibold"
+        >
+          + Report an incident
+        </button>
+      )}
+
+      <div className="space-y-2">
+        {incidents.length === 0 && (
+          <p className="text-sm text-slate-400 text-center py-4">No incidents recorded.</p>
+        )}
+        {incidents.map((inc) => (
+          <div key={inc.id} className="rounded-xl border border-slate-200 bg-white p-4">
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className={`text-xs font-semibold px-2 py-1 rounded-full ${SEVERITY_STYLES[inc.severity]}`}>
+                  {inc.severity}
+                </span>
+                <span className="text-xs font-semibold px-2 py-1 rounded-full hhcs-bg-navy-tint hhcs-text-navy">
+                  {inc.type}
+                </span>
+              </div>
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={() => removeIncident(inc.id)}
+                className="text-xs text-slate-300 hover:text-red-500 shrink-0"
+                title="Remove this incident report"
+              >
+                ✕
+              </span>
+            </div>
+            <p className="text-sm text-slate-700 whitespace-pre-wrap">{inc.description}</p>
+            {inc.action_taken && (
+              <p className="text-xs text-slate-500 mt-2"><span className="font-semibold">Action taken:</span> {inc.action_taken}</p>
+            )}
+            {inc.witnesses && (
+              <p className="text-xs text-slate-500 mt-1"><span className="font-semibold">Witnesses:</span> {inc.witnesses}</p>
+            )}
+            {inc.reported_to && (
+              <p className="text-xs text-slate-500 mt-1"><span className="font-semibold">Reported to:</span> {inc.reported_to}</p>
+            )}
+            {inc.follow_up_required && (
+              <p className="text-xs font-semibold text-amber-600 mt-1">⚠ Follow-up required</p>
+            )}
+            <p className="text-xs text-slate-400 mt-2">
+              {FULL_DATE_LABEL(inc.date)} · {inc.time?.slice(0, 5)} · by {inc.recorded_by}
+            </p>
+          </div>
+        ))}
+        {loadingIncidents && <p className="text-xs text-slate-400 text-center">Loading...</p>}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   TAB NAVIGATION
+   ============================================================ */
+const TABS = [
+  { key: 'medication', label: 'Medication' },
+  { key: 'food', label: 'Food Diary' },
+  { key: 'sleep', label: 'Sleep Log' },
+  { key: 'progress', label: 'Progress Notes' },
+  { key: 'incident', label: 'Incident Report' },
+];
+
+function TabNav({ active, onChange }) {
+  return (
+    <div className="flex gap-1 p-1 hhcs-bg-navy-tint rounded-xl overflow-x-auto lg:overflow-visible lg:flex-wrap">
+      {TABS.map((t) => (
+        <button
+          key={t.key}
+          type="button"
+          onClick={() => onChange(t.key)}
+          className={`flex-1 text-sm font-semibold py-2 px-2 rounded-lg transition-colors whitespace-nowrap
+            ${active === t.key ? 'hhcs-tab-active' : 'text-slate-500'}`}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/* ============================================================
+   APP
+   Layout note: the same components now render at any width — on
+   phones it's the original single-column stack; from a tablet /
+   laptop screen upward the whole panel simply gets wider (and
+   padding grows) so nothing looks stretched-thin on a monitor.
+   No data, contexts, or component logic were changed for this.
+   ============================================================ */
+function Dashboard() {
+  const [tab, setTab] = useState('medication');
+
+  return (
+    <div className="min-h-screen bg-slate-100 p-4 sm:p-6 lg:p-10">
+      <div className="max-w-md sm:max-w-xl lg:max-w-6xl mx-auto lg:grid lg:grid-cols-[300px_1fr] lg:gap-6 lg:items-start">
+        <div className="space-y-4 lg:sticky lg:top-10">
+          <header className="hhcs-bg-navy rounded-xl p-4 lg:p-6">
+            <h1 className="text-lg lg:text-xl font-bold text-white">Hope Health & Care Services</h1>
+            <p className="text-xs lg:text-sm text-slate-200">NDIS Participant Care Log — Staff Portal</p>
+          </header>
+
+          <StaffAttributionBar />
+          <ParticipantSelector />
+          <TabNav active={tab} onChange={setTab} />
+        </div>
+
+        <div className="mt-4 lg:mt-0 lg:bg-white lg:rounded-xl lg:border lg:border-slate-200 lg:p-6">
+          {tab === 'medication' && <MedicationSignOff />}
+          {tab === 'food' && <FoodDiaryGrid />}
+          {tab === 'sleep' && <SleepLog />}
+          {tab === 'progress' && <ProgressNotes />}
+          {tab === 'incident' && <IncidentReport />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AppShell() {
+  const { staffName } = useStaff();
+  if (!staffName) return <StaffLogin />;
+  return <Dashboard />;
+}
+
+export default function App() {
+  return (
+    <ParticipantProvider>
+      <StaffProvider>
+        <style>{THEME_CSS}</style>
+        <AppShell />
+      </StaffProvider>
+    </ParticipantProvider>
+  );
+}
