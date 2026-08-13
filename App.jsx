@@ -1219,19 +1219,12 @@ function FoodDiaryGrid() {
   );
 }
 /* ============================================================
-   SLEEP LOG — 24-hour horizontal timeline grid (AM row + PM row)
-   plus a dedicated persistent Notes section for the day.
-   Redesigned per spec while reusing all existing style tokens
-   (hhcs-bg-navy-tint, hhcs-chip-active, SLEEP_STATUS_STYLES,
-   hhcs-input, etc.) so nothing about the visual language changes.
+   SLEEP LOG — a single Sleep Time / Wake Time record per
+   participant per day, plus a dedicated persistent Notes
+   section. Reuses all existing style tokens (hhcs-bg-navy-tint,
+   hhcs-chip-active, hhcs-input, etc.) so the visual language
+   stays consistent with the rest of the app.
    ============================================================ */
-const SLEEP_STATUS_STYLES = {
-  pending: 'bg-slate-100 text-slate-400 border-slate-200',
-  asleep: 'bg-indigo-100 text-indigo-700 border-indigo-200',
-  awake: 'bg-amber-100 text-amber-700 border-amber-200',
-  checked: 'bg-emerald-100 text-emerald-700 border-emerald-200',
-};
-
 function formatSlot(time24) {
   const [h, m] = time24.split(':').map(Number);
   const period = h >= 12 ? 'PM' : 'AM';
@@ -1308,27 +1301,13 @@ function AmPmTimeInput({ value, onChange }) {
   );
 }
 
-// Builds the 24 hour-cell definitions used by the AM/PM grid rows.
-// Each cell carries its 24h key (e.g. "13:00") so it can be matched
-// against saved slots, plus a friendly AM/PM label for display.
-function buildHourCells(startHour) {
-  return Array.from({ length: 12 }, (_, i) => {
-    const h = startHour + i;
-    const hour12 = h % 12 === 0 ? 12 : h % 12;
-    const period = h >= 12 ? 'PM' : 'AM';
-    return { hour: h, key: `${pad2(h)}:00`, label: `${hour12}${i === 0 ? ' ' + period : ''}` };
-  });
-}
-const AM_CELLS = buildHourCells(0);
-const PM_CELLS = buildHourCells(12);
-
 function SleepLog() {
   const { selectedParticipant, selectedId } = useParticipant();
   const { staffName } = useStaff();
   const { logsByParticipant, setLogsByParticipant, dayNotesByParticipant, setDayNotesByParticipant } = useSleepLogData();
   const [date, setDate] = useState(TODAY_STR);
-  const [activeHour, setActiveHour] = useState(null); // "HH:00" key currently being edited
-  const [draft, setDraft] = useState({ time_slot: '', status: 'asleep', how_awoken: AWOKEN_OPTIONS[0], mood: MOOD_OPTIONS[0], sleep_time: '', wake_time: '' });
+  const [draft, setDraft] = useState({ sleep_time: '', wake_time: '', how_awoken: AWOKEN_OPTIONS[0], mood: MOOD_OPTIONS[0] });
+  const [saving, setSaving] = useState(false);
   const [dayNotesDraft, setDayNotesDraft] = useState('');
   const [notesSaved, setNotesSaved] = useState(true);
   const [notesSaving, setNotesSaving] = useState(false);
@@ -1336,14 +1315,21 @@ function SleepLog() {
   const [notesError, setNotesError] = useState('');
 
   const dayLogs = logsByParticipant[selectedId]?.[date] || [];
+  const existingRecord = dayLogs[0] || null;
   const savedDayNotes = dayNotesByParticipant[selectedId]?.[date] || '';
 
-  // Tab stays mounted across navigation now, so we only reset the open
-  // editor when participant changes — paging days shouldn't nuke an
-  // in-progress edit for a different date the worker is mid-way through.
+  // One sleep record per participant per date now (no more per-hour grid),
+  // so the draft just needs to track the currently selected participant + date.
   useEffect(() => {
-    setActiveHour(null);
-  }, [selectedId]);
+    const rec = logsByParticipant[selectedId]?.[date]?.[0];
+    setDraft({
+      sleep_time: rec?.sleep_time || '',
+      wake_time: rec?.wake_time || '',
+      how_awoken: rec?.how_awoken || AWOKEN_OPTIONS[0],
+      mood: rec?.mood || MOOD_OPTIONS[0],
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId, date]);
 
   // Load the persisted note for this participant + date from the
   // `sleep_notes` table (participant_id, date, notes, updated_by,
@@ -1387,65 +1373,35 @@ function SleepLog() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, date]);
 
-  function findSlotForHour(hourKey) {
-    return dayLogs.find((s) => s.time_slot.slice(0, 2) === hourKey.slice(0, 2));
-  }
-
-  function openHour(hourKey) {
-    if (activeHour === hourKey) {
-      setActiveHour(null);
-      return;
-    }
-    const existing = findSlotForHour(hourKey);
-    setDraft({
-      time_slot: existing?.time_slot || hourKey,
-      status: existing?.status || 'asleep',
-      how_awoken: existing?.how_awoken || AWOKEN_OPTIONS[0],
-      mood: existing?.mood || MOOD_OPTIONS[0],
-      sleep_time: existing?.sleep_time || '',
-      wake_time: existing?.wake_time || '',
-    });
-    setActiveHour(hourKey);
-  }
-
-  function saveHour(hourKey) {
+  function saveRecord() {
     if (!requireStaffName(staffName)) return;
+    setSaving(true);
     setLogsByParticipant((prev) => {
       const participantLogs = { ...(prev[selectedId] || {}) };
-      const existingDay = participantLogs[date] || [];
-      const existing = existingDay.find((s) => s.time_slot.slice(0, 2) === hourKey.slice(0, 2));
-      // Sleep Time / Wake Time only apply to the "Asleep" status — for
-      // Awake/Checked (untouched per spec) we simply carry forward
-      // whatever was previously recorded rather than clearing it.
-      const sleepFields = draft.status === 'asleep'
-        ? { sleep_time: draft.sleep_time || '', wake_time: draft.wake_time || '' }
-        : { sleep_time: existing?.sleep_time || '', wake_time: existing?.wake_time || '' };
-      let updatedDay;
-      if (existing) {
-        updatedDay = existingDay.map((s) =>
-          s.id === existing.id ? { ...s, ...draft, ...sleepFields, recorded_by: staffName.trim() } : s
-        );
-      } else {
-        updatedDay = [
-          ...existingDay,
-          { id: `sl-${Date.now()}`, ...draft, ...sleepFields, recorded_by: staffName.trim() },
-        ];
-      }
-      updatedDay.sort((a, b) => a.time_slot.localeCompare(b.time_slot));
-      participantLogs[date] = updatedDay;
+      const existing = participantLogs[date]?.[0];
+      const record = {
+        id: existing?.id || `sl-${selectedId}-${date}`,
+        status: 'asleep',
+        time_slot: draft.sleep_time || existing?.time_slot || '00:00',
+        sleep_time: draft.sleep_time,
+        wake_time: draft.wake_time,
+        how_awoken: draft.how_awoken,
+        mood: draft.mood,
+        recorded_by: staffName.trim(),
+      };
+      participantLogs[date] = [record];
       return { ...prev, [selectedId]: participantLogs };
     });
-    setActiveHour(null);
+    setSaving(false);
   }
 
-  function removeHour(hourKey) {
+  function clearRecord() {
     setLogsByParticipant((prev) => {
       const participantLogs = { ...(prev[selectedId] || {}) };
-      const existingDay = participantLogs[date] || [];
-      participantLogs[date] = existingDay.filter((s) => s.time_slot.slice(0, 2) !== hourKey.slice(0, 2));
+      participantLogs[date] = [];
       return { ...prev, [selectedId]: participantLogs };
     });
-    setActiveHour(null);
+    setDraft({ sleep_time: '', wake_time: '', how_awoken: AWOKEN_OPTIONS[0], mood: MOOD_OPTIONS[0] });
   }
 
   async function saveDayNotes() {
@@ -1484,41 +1440,6 @@ function SleepLog() {
   if (!selectedParticipant) {
     return <p className="text-slate-400 text-sm">Select a participant to view their sleep log.</p>;
   }
-
-  const renderRow = (cells, rowLabel) => (
-    <div>
-      <p className="text-xs font-semibold hhcs-text-navy mb-1">{rowLabel}</p>
-      <div className="grid grid-cols-12 gap-1">
-        {cells.map((cell) => {
-          const slot = findSlotForHour(cell.key);
-          const status = slot?.status || 'pending';
-          const isActive = activeHour === cell.key;
-          return (
-            <button
-              key={cell.key}
-              type="button"
-              onClick={() => openHour(cell.key)}
-              title={
-                slot
-                  ? `${formatSlot(slot.time_slot)} · ${slot.status}` +
-                    (slot.status === 'asleep' && (slot.sleep_time || slot.wake_time)
-                      ? ` · Sleep ${slot.sleep_time ? formatSlot(slot.sleep_time) : '—'} → Wake ${slot.wake_time ? formatSlot(slot.wake_time) : '—'}`
-                      : '')
-                  : `${cell.label} ${rowLabel} — tap to log`
-              }
-              className={`h-12 rounded-md border text-[11px] font-semibold flex flex-col items-center justify-center leading-tight
-                ${SLEEP_STATUS_STYLES[status]}
-                ${isActive ? 'ring-2 ring-offset-1' : ''}`}
-              style={isActive ? { boxShadow: '0 0 0 2px var(--hhcs-teal)' } : undefined}
-            >
-              <span>{cell.label}</span>
-              {slot && <span className="text-[9px] normal-case">{slot.time_slot.slice(3, 5)}</span>}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
 
   return (
     <div className="space-y-3">
@@ -1559,119 +1480,86 @@ function SleepLog() {
         </button>
       </div>
 
-      <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-3">
-        {renderRow(AM_CELLS, 'AM')}
-        {renderRow(PM_CELLS, 'PM')}
-        <div className="flex flex-wrap gap-3 pt-1">
-          {Object.entries(SLEEP_STATUS_STYLES)
-            .filter(([key]) => key !== 'checked')
-            .map(([key, cls]) => (
-              <span key={key} className="flex items-center gap-1 text-[11px] text-slate-500">
-                <span className={`inline-block w-3 h-3 rounded border ${cls}`} />
-                {key.charAt(0).toUpperCase() + key.slice(1)}
-              </span>
-            ))}
+      <div className="rounded-xl border hhcs-border-teal hhcs-bg-teal-tint p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <p className="text-sm font-semibold text-slate-700">Sleep Record</p>
+          {existingRecord && (
+            <button
+              type="button"
+              onClick={clearRecord}
+              className="text-xs text-red-500 font-medium"
+            >
+              Clear entry
+            </button>
+          )}
         </div>
+
+        {/* Sleep Time / Wake Time — the two fields that actually matter
+            here, each with an explicit AM/PM picker so the worker is
+            never guessing which format the field wants. */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs font-medium text-slate-500">Sleep Time</label>
+            <div className="mt-1">
+              <AmPmTimeInput
+                value={draft.sleep_time}
+                onChange={(v) => setDraft((d) => ({ ...d, sleep_time: v }))}
+              />
+            </div>
+          </div>
+          <div>
+            <label className="text-xs font-medium text-slate-500">Wake Time</label>
+            <div className="mt-1">
+              <AmPmTimeInput
+                value={draft.wake_time}
+                onChange={(v) => setDraft((d) => ({ ...d, wake_time: v }))}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-xs font-medium text-slate-500">How awoken</label>
+            <select
+              value={draft.how_awoken}
+              onChange={(e) => setDraft((d) => ({ ...d, how_awoken: e.target.value }))}
+              className="hhcs-input w-full rounded-lg border border-slate-200 px-2 py-2 text-sm mt-1"
+            >
+              {AWOKEN_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-xs font-medium text-slate-500">Mood</label>
+            <select
+              value={draft.mood}
+              onChange={(e) => setDraft((d) => ({ ...d, mood: e.target.value }))}
+              className="hhcs-input w-full rounded-lg border border-slate-200 px-2 py-2 text-sm mt-1"
+            >
+              {MOOD_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={saveRecord}
+          disabled={saving || !staffName.trim()}
+          className="hhcs-btn-primary w-full font-semibold py-2.5 rounded-lg disabled:cursor-not-allowed"
+        >
+          {saving ? 'Saving...' : 'Save'}
+        </button>
+        {existingRecord?.recorded_by && (
+          <p className="text-xs text-slate-500">Last saved by {existingRecord.recorded_by}</p>
+        )}
+        {!staffName.trim() && (
+          <p className="text-xs text-red-600 font-medium">
+            Enter your name or initials at the top of the page to save.
+          </p>
+        )}
       </div>
 
-      {activeHour && (
-        <div className="rounded-xl border hhcs-border-teal hhcs-bg-teal-tint p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <p className="text-sm font-semibold text-slate-700">
-              Editing {formatSlot(draft.time_slot || activeHour)}
-            </p>
-            {findSlotForHour(activeHour) && (
-              <button
-                type="button"
-                onClick={() => removeHour(activeHour)}
-                className="text-xs text-red-500 font-medium"
-              >
-                Remove entry
-              </button>
-            )}
-          </div>
-
-          <div className="flex gap-2">
-            {['asleep', 'awake'].map((opt) => (
-              <button
-                key={opt}
-                type="button"
-                onClick={() => setDraft((d) => ({ ...d, status: opt }))}
-                className={`flex-1 text-sm font-medium py-2 rounded-lg border
-                  ${draft.status === opt ? 'hhcs-chip-active' : 'bg-white text-slate-600 border-slate-200'}`}
-              >
-                {opt.charAt(0).toUpperCase() + opt.slice(1)}
-              </button>
-            ))}
-          </div>
-
-          {/* Sleep Time / Wake Time — the two fields that actually matter
-              here. Only shown for the "Asleep" status; "Awake" is left
-              completely untouched. Both use an explicit AM/PM picker so
-              the worker is never guessing which format the field wants. */}
-          {draft.status === 'asleep' && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs font-medium text-slate-500">Sleep Time</label>
-                <div className="mt-1">
-                  <AmPmTimeInput
-                    value={draft.sleep_time}
-                    onChange={(v) => setDraft((d) => ({ ...d, sleep_time: v }))}
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="text-xs font-medium text-slate-500">Wake Time</label>
-                <div className="mt-1">
-                  <AmPmTimeInput
-                    value={draft.wake_time}
-                    onChange={(v) => setDraft((d) => ({ ...d, wake_time: v }))}
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="text-xs font-medium text-slate-500">How awoken</label>
-              <select
-                value={draft.how_awoken}
-                onChange={(e) => setDraft((d) => ({ ...d, how_awoken: e.target.value }))}
-                className="hhcs-input w-full rounded-lg border border-slate-200 px-2 py-2 text-sm mt-1"
-              >
-                {AWOKEN_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="text-xs font-medium text-slate-500">Mood</label>
-              <select
-                value={draft.mood}
-                onChange={(e) => setDraft((d) => ({ ...d, mood: e.target.value }))}
-                className="hhcs-input w-full rounded-lg border border-slate-200 px-2 py-2 text-sm mt-1"
-              >
-                {MOOD_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
-              </select>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => saveHour(activeHour)}
-            disabled={!staffName.trim()}
-            className="hhcs-btn-primary w-full font-semibold py-2.5 rounded-lg disabled:cursor-not-allowed"
-          >
-            Save Check
-          </button>
-          {!staffName.trim() && (
-            <p className="text-xs text-red-600 font-medium">
-              Enter your name or initials at the top of the page to save.
-            </p>
-          )}
-        </div>
-      )}
-
-      {/* Dedicated day-level notes — separate from per-hour check notes,
+      {/* Dedicated day-level notes — separate from the sleep record above,
           persisted to the sleep_notes table (participant_id, date, notes,
           updated_by, updated_at) per participant + date. */}
       <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
