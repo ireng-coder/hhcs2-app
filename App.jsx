@@ -1259,7 +1259,7 @@ function SleepLog() {
   const { logsByParticipant, setLogsByParticipant, dayNotesByParticipant, setDayNotesByParticipant } = useSleepLogData();
   const [date, setDate] = useState(TODAY_STR);
   const [activeHour, setActiveHour] = useState(null); // "HH:00" key currently being edited
-  const [draft, setDraft] = useState({ time_slot: '', status: 'asleep', how_awoken: AWOKEN_OPTIONS[0], mood: MOOD_OPTIONS[0], notes: '', sleep_time: '', wake_time: '' });
+  const [draft, setDraft] = useState({ time_slot: '', status: 'asleep', how_awoken: AWOKEN_OPTIONS[0], mood: MOOD_OPTIONS[0], sleep_time: '', wake_time: '' });
   const [dayNotesDraft, setDayNotesDraft] = useState('');
   const [notesSaved, setNotesSaved] = useState(true);
   const [notesSaving, setNotesSaving] = useState(false);
@@ -1333,7 +1333,6 @@ function SleepLog() {
       status: existing?.status || 'asleep',
       how_awoken: existing?.how_awoken || AWOKEN_OPTIONS[0],
       mood: existing?.mood || MOOD_OPTIONS[0],
-      notes: existing?.notes || '',
       sleep_time: existing?.sleep_time || '',
       wake_time: existing?.wake_time || '',
     });
@@ -1495,12 +1494,14 @@ function SleepLog() {
         {renderRow(AM_CELLS, 'AM')}
         {renderRow(PM_CELLS, 'PM')}
         <div className="flex flex-wrap gap-3 pt-1">
-          {Object.entries(SLEEP_STATUS_STYLES).map(([key, cls]) => (
-            <span key={key} className="flex items-center gap-1 text-[11px] text-slate-500">
-              <span className={`inline-block w-3 h-3 rounded border ${cls}`} />
-              {key.charAt(0).toUpperCase() + key.slice(1)}
-            </span>
-          ))}
+          {Object.entries(SLEEP_STATUS_STYLES)
+            .filter(([key]) => key !== 'checked')
+            .map(([key, cls]) => (
+              <span key={key} className="flex items-center gap-1 text-[11px] text-slate-500">
+                <span className={`inline-block w-3 h-3 rounded border ${cls}`} />
+                {key.charAt(0).toUpperCase() + key.slice(1)}
+              </span>
+            ))}
         </div>
       </div>
 
@@ -1521,19 +1522,8 @@ function SleepLog() {
             )}
           </div>
 
-          <div className="flex gap-2 items-center">
-            <label className="text-xs font-medium text-slate-500 shrink-0">Exact time</label>
-            <input
-              type="time"
-              value={draft.time_slot}
-              onChange={(e) => setDraft((d) => ({ ...d, time_slot: e.target.value }))}
-              className="hhcs-input rounded-lg border border-slate-200 px-3 py-2 text-sm"
-            />
-            <span className="text-xs text-slate-400">{formatSlot(draft.time_slot || activeHour)}</span>
-          </div>
-
           <div className="flex gap-2">
-            {['asleep', 'awake', 'checked'].map((opt) => (
+            {['asleep', 'awake'].map((opt) => (
               <button
                 key={opt}
                 type="button"
@@ -1546,8 +1536,9 @@ function SleepLog() {
             ))}
           </div>
 
-          {/* Sleep Time / Wake Time — only shown for the "Asleep" status.
-              "Awake" and "Checked" are left completely untouched. */}
+          {/* Sleep Time / Wake Time — the two fields that actually matter
+              here. Only shown for the "Asleep" status; "Awake" is left
+              completely untouched. */}
           {draft.status === 'asleep' && (
             <div className="grid grid-cols-2 gap-2">
               <div>
@@ -1599,14 +1590,6 @@ function SleepLog() {
               </select>
             </div>
           </div>
-
-          <textarea
-            placeholder="Notes for this check"
-            value={draft.notes}
-            onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))}
-            rows={2}
-            className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-          />
 
           <button
             type="button"
