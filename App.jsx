@@ -1239,6 +1239,75 @@ function formatSlot(time24) {
   return `${hour12}:${String(m).padStart(2, '0')} ${period}`;
 }
 
+// Converts a stored 24h "HH:MM" string into the pieces an AM/PM picker
+// needs. Internal storage stays 24h (so it keeps sorting/comparing
+// correctly everywhere else in the file) — only the input widget itself
+// is AM/PM.
+function time24ToParts(time24) {
+  if (!time24) return { hour: '', minute: '', period: 'AM' };
+  const [hStr, mStr] = time24.split(':');
+  const h = parseInt(hStr, 10);
+  const period = h >= 12 ? 'PM' : 'AM';
+  const hour12 = h % 12 === 0 ? 12 : h % 12;
+  return { hour: String(hour12), minute: mStr, period };
+}
+
+function partsToTime24(hour, minute, period) {
+  if (!hour || minute === '' || minute === undefined || minute === null) return '';
+  let h = parseInt(hour, 10) % 12;
+  if (period === 'PM') h += 12;
+  return `${pad2(h)}:${pad2(parseInt(minute, 10))}`;
+}
+
+const AMPM_HOURS = Array.from({ length: 12 }, (_, i) => String(i + 1));
+const AMPM_MINUTES = Array.from({ length: 12 }, (_, i) => pad2(i * 5));
+
+/** Explicit Hour / Minute / AM-PM picker — guarantees the worker enters a
+ *  time in AM/PM format rather than relying on the browser/OS's native
+ *  <input type="time"> rendering, which is often locale-dependent and
+ *  shows 24h on many devices. */
+function AmPmTimeInput({ value, onChange }) {
+  const { hour, minute, period } = time24ToParts(value);
+
+  function update(nextHour, nextMinute, nextPeriod) {
+    onChange(partsToTime24(nextHour, nextMinute, nextPeriod));
+  }
+
+  return (
+    <div className="flex gap-1.5 items-center">
+      <select
+        value={hour}
+        onChange={(e) => update(e.target.value, minute || '00', period)}
+        className="hhcs-input rounded-lg border border-slate-200 px-2 py-2 text-sm"
+      >
+        <option value="" disabled>HH</option>
+        {AMPM_HOURS.map((h) => <option key={h} value={h}>{h}</option>)}
+      </select>
+      <span className="text-slate-400">:</span>
+      <select
+        value={minute}
+        onChange={(e) => update(hour || '12', e.target.value, period)}
+        className="hhcs-input rounded-lg border border-slate-200 px-2 py-2 text-sm"
+      >
+        <option value="" disabled>MM</option>
+        {AMPM_MINUTES.map((m) => <option key={m} value={m}>{m}</option>)}
+      </select>
+      <div className="flex rounded-lg border border-slate-200 overflow-hidden shrink-0">
+        {['AM', 'PM'].map((p) => (
+          <button
+            key={p}
+            type="button"
+            onClick={() => update(hour || '12', minute || '00', p)}
+            className={`px-2.5 py-2 text-xs font-semibold ${period === p ? 'hhcs-chip-active' : 'bg-white text-slate-500'}`}
+          >
+            {p}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // Builds the 24 hour-cell definitions used by the AM/PM grid rows.
 // Each cell carries its 24h key (e.g. "13:00") so it can be matched
 // against saved slots, plus a friendly AM/PM label for display.
@@ -1538,32 +1607,27 @@ function SleepLog() {
 
           {/* Sleep Time / Wake Time — the two fields that actually matter
               here. Only shown for the "Asleep" status; "Awake" is left
-              completely untouched. */}
+              completely untouched. Both use an explicit AM/PM picker so
+              the worker is never guessing which format the field wants. */}
           {draft.status === 'asleep' && (
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="text-xs font-medium text-slate-500">Sleep Time</label>
-                <input
-                  type="time"
-                  value={draft.sleep_time}
-                  onChange={(e) => setDraft((d) => ({ ...d, sleep_time: e.target.value }))}
-                  className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm mt-1"
-                />
-                {draft.sleep_time && (
-                  <span className="text-xs text-slate-400">{formatSlot(draft.sleep_time)}</span>
-                )}
+                <div className="mt-1">
+                  <AmPmTimeInput
+                    value={draft.sleep_time}
+                    onChange={(v) => setDraft((d) => ({ ...d, sleep_time: v }))}
+                  />
+                </div>
               </div>
               <div>
                 <label className="text-xs font-medium text-slate-500">Wake Time</label>
-                <input
-                  type="time"
-                  value={draft.wake_time}
-                  onChange={(e) => setDraft((d) => ({ ...d, wake_time: e.target.value }))}
-                  className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm mt-1"
-                />
-                {draft.wake_time && (
-                  <span className="text-xs text-slate-400">{formatSlot(draft.wake_time)}</span>
-                )}
+                <div className="mt-1">
+                  <AmPmTimeInput
+                    value={draft.wake_time}
+                    onChange={(v) => setDraft((d) => ({ ...d, wake_time: v }))}
+                  />
+                </div>
               </div>
             </div>
           )}
