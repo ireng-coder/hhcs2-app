@@ -121,6 +121,9 @@ const STAFF_LIST = [
   { name: 'Faraja Mugisho', role: null },
 ];
 
+/* ============================================================
+   CONTEXT DEFINITIONS (Restored to fix reference error)
+   ============================================================ */
 const ParticipantContext = createContext(null);
 
 function ParticipantProvider({ children }) {
@@ -185,7 +188,7 @@ function useSleepLogData() {
 }
 
 /* ============================================================
-   UPDATED SLEEP LOG COMPONENT
+   SLEEP LOG COMPONENT
    ============================================================ */
 function SleepLogTab() {
   const { selectedId } = useParticipant();
@@ -451,5 +454,29 @@ function SleepLogTab() {
         </div>
       )}
     </div>
+  );
+}
+
+/* ============================================================
+   MAIN APP ROOT COMPONENT
+   ============================================================ */
+export default function App() {
+  return (
+    <ParticipantProvider>
+      <StaffProvider>
+        <SleepLogDataProvider>
+          <div className="min-h-screen bg-slate-100 p-4 sm:p-8">
+            <div className="max-w-4xl mx-auto space-y-6">
+              <header className="bg-white rounded-xl p-4 shadow-sm border border-slate-200 flex items-center justify-between">
+                <h1 className="text-lg font-bold text-slate-800">HCMS Sleep Monitoring Portal</h1>
+              </header>
+              <main>
+                <SleepLogTab />
+              </main>
+            </div>
+          </div>
+        </SleepLogDataProvider>
+      </StaffProvider>
+    </ParticipantProvider>
   );
 }
