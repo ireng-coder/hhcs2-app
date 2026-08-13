@@ -1259,9 +1259,12 @@ function SleepLog() {
   const { logsByParticipant, setLogsByParticipant, dayNotesByParticipant, setDayNotesByParticipant } = useSleepLogData();
   const [date, setDate] = useState(TODAY_STR);
   const [activeHour, setActiveHour] = useState(null); // "HH:00" key currently being edited
-  const [draft, setDraft] = useState({ time_slot: '', status: 'asleep', how_awoken: AWOKEN_OPTIONS[0], mood: MOOD_OPTIONS[0], notes: '' });
+  const [draft, setDraft] = useState({ time_slot: '', status: 'asleep', how_awoken: AWOKEN_OPTIONS[0], mood: MOOD_OPTIONS[0], notes: '', sleep_time: '', wake_time: '' });
   const [dayNotesDraft, setDayNotesDraft] = useState('');
   const [notesSaved, setNotesSaved] = useState(true);
+  const [notesSaving, setNotesSaving] = useState(false);
+  const [notesLoading, setNotesLoading] = useState(false);
+  const [notesError, setNotesError] = useState('');
 
   const dayLogs = logsByParticipant[selectedId]?.[date] || [];
   const savedDayNotes = dayNotesByParticipant[selectedId]?.[date] || '';
@@ -1273,12 +1276,45 @@ function SleepLog() {
     setActiveHour(null);
   }, [selectedId]);
 
-  // Keep the notes textarea in sync with saved data whenever the
-  // participant or date changes, without clobbering the notes if the
-  // underlying saved value hasn't actually changed.
+  // Load the persisted note for this participant + date from the
+  // `sleep_notes` table (participant_id, date, notes, updated_by,
+  // updated_at). Falls back to the locally cached value (e.g. if offline
+  // or the row doesn't exist yet) so the field never appears to "lose"
+  // a note that just hasn't round-tripped through the network yet.
   useEffect(() => {
-    setDayNotesDraft(savedDayNotes);
-    setNotesSaved(true);
+    let cancelled = false;
+    async function loadSleepNotes() {
+      if (!selectedId) return;
+      setNotesLoading(true);
+      setNotesError('');
+      const { data, error } = await supabase
+        .from('sleep_notes')
+        .select('notes')
+        .eq('participant_id', selectedId)
+        .eq('date', date)
+        .maybeSingle();
+      if (cancelled) return;
+      if (error) {
+        // Keep whatever is cached locally and surface the error rather
+        // than blanking the textarea out.
+        setNotesError(error.message);
+        setDayNotesDraft(savedDayNotes);
+      } else {
+        const loaded = data?.notes ?? '';
+        setDayNotesDraft(loaded);
+        // Mirror into the shared context so ShiftReport and other
+        // consumers stay in sync with what's actually in the database.
+        setDayNotesByParticipant((prev) => {
+          const participantNotes = { ...(prev[selectedId] || {}) };
+          participantNotes[date] = loaded;
+          return { ...prev, [selectedId]: participantNotes };
+        });
+      }
+      setNotesSaved(true);
+      setNotesLoading(false);
+    }
+    loadSleepNotes();
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, date]);
 
@@ -1298,6 +1334,8 @@ function SleepLog() {
       how_awoken: existing?.how_awoken || AWOKEN_OPTIONS[0],
       mood: existing?.mood || MOOD_OPTIONS[0],
       notes: existing?.notes || '',
+      sleep_time: existing?.sleep_time || '',
+      wake_time: existing?.wake_time || '',
     });
     setActiveHour(hourKey);
   }
@@ -1308,15 +1346,21 @@ function SleepLog() {
       const participantLogs = { ...(prev[selectedId] || {}) };
       const existingDay = participantLogs[date] || [];
       const existing = existingDay.find((s) => s.time_slot.slice(0, 2) === hourKey.slice(0, 2));
+      // Sleep Time / Wake Time only apply to the "Asleep" status — for
+      // Awake/Checked (untouched per spec) we simply carry forward
+      // whatever was previously recorded rather than clearing it.
+      const sleepFields = draft.status === 'asleep'
+        ? { sleep_time: draft.sleep_time || '', wake_time: draft.wake_time || '' }
+        : { sleep_time: existing?.sleep_time || '', wake_time: existing?.wake_time || '' };
       let updatedDay;
       if (existing) {
         updatedDay = existingDay.map((s) =>
-          s.id === existing.id ? { ...s, ...draft, recorded_by: staffName.trim() } : s
+          s.id === existing.id ? { ...s, ...draft, ...sleepFields, recorded_by: staffName.trim() } : s
         );
       } else {
         updatedDay = [
           ...existingDay,
-          { id: `sl-${Date.now()}`, ...draft, recorded_by: staffName.trim() },
+          { id: `sl-${Date.now()}`, ...draft, ...sleepFields, recorded_by: staffName.trim() },
         ];
       }
       updatedDay.sort((a, b) => a.time_slot.localeCompare(b.time_slot));
@@ -1336,14 +1380,37 @@ function SleepLog() {
     setActiveHour(null);
   }
 
-  function saveDayNotes() {
+  async function saveDayNotes() {
     if (!requireStaffName(staffName)) return;
-    setDayNotesByParticipant((prev) => {
-      const participantNotes = { ...(prev[selectedId] || {}) };
-      participantNotes[date] = dayNotesDraft;
-      return { ...prev, [selectedId]: participantNotes };
-    });
-    setNotesSaved(true);
+    setNotesSaving(true);
+    setNotesError('');
+    // Upsert against the existing sleep_notes table structure
+    // (participant_id, date, notes, updated_by, updated_at). onConflict
+    // targets the natural key so a second save on the same day updates
+    // the same row instead of erroring on a duplicate insert.
+    const { error } = await supabase
+      .from('sleep_notes')
+      .upsert(
+        {
+          participant_id: selectedId,
+          date,
+          notes: dayNotesDraft,
+          updated_by: staffName.trim(),
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'participant_id,date' }
+      );
+    if (error) {
+      setNotesError('Could not save notes: ' + error.message);
+    } else {
+      setDayNotesByParticipant((prev) => {
+        const participantNotes = { ...(prev[selectedId] || {}) };
+        participantNotes[date] = dayNotesDraft;
+        return { ...prev, [selectedId]: participantNotes };
+      });
+      setNotesSaved(true);
+    }
+    setNotesSaving(false);
   }
 
   if (!selectedParticipant) {
@@ -1363,7 +1430,14 @@ function SleepLog() {
               key={cell.key}
               type="button"
               onClick={() => openHour(cell.key)}
-              title={slot ? `${formatSlot(slot.time_slot)} · ${slot.status}` : `${cell.label} ${rowLabel} — tap to log`}
+              title={
+                slot
+                  ? `${formatSlot(slot.time_slot)} · ${slot.status}` +
+                    (slot.status === 'asleep' && (slot.sleep_time || slot.wake_time)
+                      ? ` · Sleep ${slot.sleep_time ? formatSlot(slot.sleep_time) : '—'} → Wake ${slot.wake_time ? formatSlot(slot.wake_time) : '—'}`
+                      : '')
+                  : `${cell.label} ${rowLabel} — tap to log`
+              }
               className={`h-12 rounded-md border text-[11px] font-semibold flex flex-col items-center justify-center leading-tight
                 ${SLEEP_STATUS_STYLES[status]}
                 ${isActive ? 'ring-2 ring-offset-1' : ''}`}
@@ -1472,6 +1546,37 @@ function SleepLog() {
             ))}
           </div>
 
+          {/* Sleep Time / Wake Time — only shown for the "Asleep" status.
+              "Awake" and "Checked" are left completely untouched. */}
+          {draft.status === 'asleep' && (
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-xs font-medium text-slate-500">Sleep Time</label>
+                <input
+                  type="time"
+                  value={draft.sleep_time}
+                  onChange={(e) => setDraft((d) => ({ ...d, sleep_time: e.target.value }))}
+                  className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm mt-1"
+                />
+                {draft.sleep_time && (
+                  <span className="text-xs text-slate-400">{formatSlot(draft.sleep_time)}</span>
+                )}
+              </div>
+              <div>
+                <label className="text-xs font-medium text-slate-500">Wake Time</label>
+                <input
+                  type="time"
+                  value={draft.wake_time}
+                  onChange={(e) => setDraft((d) => ({ ...d, wake_time: e.target.value }))}
+                  className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm mt-1"
+                />
+                {draft.wake_time && (
+                  <span className="text-xs text-slate-400">{formatSlot(draft.wake_time)}</span>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-2">
             <div>
               <label className="text-xs font-medium text-slate-500">How awoken</label>
@@ -1520,7 +1625,8 @@ function SleepLog() {
       )}
 
       {/* Dedicated day-level notes — separate from per-hour check notes,
-          fully persistent per participant + date. */}
+          persisted to the sleep_notes table (participant_id, date, notes,
+          updated_by, updated_at) per participant + date. */}
       <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
         <p className="text-sm font-semibold text-slate-700">Sleep Notes — {FULL_DATE_LABEL(date)}</p>
         <textarea
@@ -1529,16 +1635,20 @@ function SleepLog() {
           rows={4}
           placeholder="Overall observations about the participant's sleep for the day/night..."
           className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+          disabled={notesLoading}
         />
+        {notesError && <p className="text-xs text-red-600 font-medium">{notesError}</p>}
         <div className="flex items-center justify-between">
-          <span className="text-xs text-slate-400">{notesSaved ? 'Saved' : 'Unsaved changes'}</span>
+          <span className="text-xs text-slate-400">
+            {notesLoading ? 'Loading...' : notesSaving ? 'Saving...' : notesSaved ? 'Saved' : 'Unsaved changes'}
+          </span>
           <button
             type="button"
             onClick={saveDayNotes}
-            disabled={notesSaved || !staffName.trim()}
+            disabled={notesSaved || notesSaving || notesLoading || !staffName.trim()}
             className="hhcs-btn-primary px-4 py-2 rounded-lg text-sm font-semibold disabled:cursor-not-allowed"
           >
-            Save Notes
+            {notesSaving ? 'Saving...' : 'Save Notes'}
           </button>
         </div>
         {!staffName.trim() && (
