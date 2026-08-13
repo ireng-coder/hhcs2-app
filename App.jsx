@@ -33,6 +33,13 @@ const THEME_CSS = `
   .hhcs-chip-active { background-color: var(--hhcs-teal); color: #ffffff; border-color: var(--hhcs-teal); }
   .hhcs-input:focus { outline: none; box-shadow: 0 0 0 2px var(--hhcs-teal); border-color: var(--hhcs-teal); }
   .hhcs-required-empty { border-color: #dc2626 !important; }
+
+  /* Print styles for the shift report — only affects window.print() output */
+  @media print {
+    body * { visibility: hidden; }
+    #hhcs-print-report, #hhcs-print-report * { visibility: visible; }
+    #hhcs-print-report { position: absolute; left: 0; top: 0; width: 100%; }
+  }
 `;
 
 /* ============================================================
@@ -101,8 +108,7 @@ function getMondayOf(dateStr) {
 
 // Calculated fresh every time the app loads — NOT a fixed string — so the
 // roster automatically rolls onto the next week (and "today" moves forward)
-// without anyone needing to edit the code. Week 1 ending doesn't require a
-// manual bump to "9, Monday 10" — this recalculates itself every load.
+// without anyone needing to edit the code.
 const TODAY_STR = toISODate(new Date());
 const CURRENT_WEEK_START = getMondayOf(TODAY_STR);
 
@@ -148,23 +154,17 @@ const MOCK_SLEEP_LOGS = {
     [TODAY_STR]: [
       { id: 'sl-1', time_slot: '20:00', status: 'awake', how_awoken: 'N/A', mood: 'Settled', notes: 'Watching TV before bed', recorded_by: 'JM' },
       { id: 'sl-2', time_slot: '22:00', status: 'asleep', how_awoken: 'N/A', mood: 'Calm', notes: '', recorded_by: 'JM' },
-      { id: 'sl-3', time_slot: '00:00', status: 'pending', how_awoken: '', mood: '', notes: '', recorded_by: '' },
-      { id: 'sl-4', time_slot: '02:00', status: 'pending', how_awoken: '', mood: '', notes: '', recorded_by: '' },
-      { id: 'sl-5', time_slot: '04:00', status: 'pending', how_awoken: '', mood: '', notes: '', recorded_by: '' },
-      { id: 'sl-6', time_slot: '06:00', status: 'pending', how_awoken: '', mood: '', notes: '', recorded_by: '' },
     ],
   },
   4: {
     [TODAY_STR]: [
       { id: 'sl-7', time_slot: '20:00', status: 'asleep', how_awoken: 'N/A', mood: 'Calm', notes: '', recorded_by: 'KP' },
-      { id: 'sl-8', time_slot: '22:00', status: 'pending', how_awoken: '', mood: '', notes: '', recorded_by: '' },
-      { id: 'sl-9', time_slot: '00:00', status: 'pending', how_awoken: '', mood: '', notes: '', recorded_by: '' },
-      { id: 'sl-10', time_slot: '02:00', status: 'pending', how_awoken: '', mood: '', notes: '', recorded_by: '' },
-      { id: 'sl-11', time_slot: '04:00', status: 'pending', how_awoken: '', mood: '', notes: '', recorded_by: '' },
-      { id: 'sl-12', time_slot: '06:00', status: 'pending', how_awoken: '', mood: '', notes: '', recorded_by: '' },
     ],
   },
 };
+
+// participantId -> date -> free-text shift notes about sleep for that day (separate from per-hour slots)
+const MOCK_SLEEP_DAY_NOTES = {};
 
 // participantId -> [{ id, medication_name, scheduled_date, scheduled_time, status, recorded_by }]
 const MOCK_SIGNOFFS = {
@@ -444,9 +444,14 @@ function ParticipantSelector({ className = '' }) {
   const filtered = useMemo(() => {
     if (!query.trim()) return participants;
     const q = query.toLowerCase();
-    return participants.filter(
-      (p) => p.name.toLowerCase().includes(q) || p.service.toLowerCase().includes(q)
-    );
+    // Null-safe: some participant records may be missing a name or service
+    // value, and calling .toLowerCase() directly on undefined/null used to
+    // throw and blank the whole app. String(val || '') guards against that.
+    return participants.filter((p) => {
+      const name = String(p?.name || '').toLowerCase();
+      const service = String(p?.service || '').toLowerCase();
+      return name.includes(q) || service.includes(q);
+    });
   }, [participants, query]);
 
   const selected = participants.find((p) => String(p.id) === String(selectedId));
@@ -530,7 +535,7 @@ function ParticipantSelector({ className = '' }) {
 /* ============================================================
    SIGNATURE PAD
    ============================================================ */
-function SignaturePad({ onChange, height = 160 }) {
+function SignaturePad({ onChange, height = 160, value = null }) {
   const canvasRef = useRef(null);
   const drawing = useRef(false);
   const hasDrawn = useRef(false);
@@ -568,8 +573,15 @@ function SignaturePad({ onChange, height = 160 }) {
   };
 
   const end = () => {
+    if (!drawing.current) return;
     drawing.current = false;
-    if (hasDrawn.current) onChange(canvasRef.current.toDataURL('image/png'));
+    // Always push the latest canvas contents up on pointer/touch release —
+    // this is what was previously silently dropped when the parent
+    // re-rendered or the component unmounted before onChange fired.
+    if (hasDrawn.current) {
+      const dataUrl = canvasRef.current.toDataURL('image/png');
+      onChange(dataUrl);
+    }
   };
 
   const clear = () => {
@@ -590,10 +602,20 @@ function SignaturePad({ onChange, height = 160 }) {
       canvas.style.width = `${width}px`;
       canvas.style.height = `${height}px`;
       canvas.getContext('2d').scale(ratio, ratio);
+      // Restore a previously-saved signature (e.g. reopening an in-progress
+      // row) so the drawing isn't lost on re-render/resize.
+      if (value) {
+        const img = new Image();
+        img.onload = () => {
+          canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+        };
+        img.src = value;
+      }
     };
     resize();
     window.addEventListener('resize', resize);
     return () => window.removeEventListener('resize', resize);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [height]);
 
   return (
@@ -622,12 +644,71 @@ const STATUS_STYLES = {
 };
 
 /* ============================================================
+   SHARED DATA CONTEXTS for Medication / Food Diary / Sleep Log.
+   These used to be plain useState inside each tab component,
+   which meant (a) switching tabs could lose in-progress data
+   depending on how the tab was rendered, and (b) there was no
+   way for the "Download & Print Shift Report" feature to see
+   this data at all. Lifting it up here fixes both at once —
+   the data now lives above the tabs and above the report.
+   ============================================================ */
+const MedicationDataContext = createContext(null);
+function MedicationDataProvider({ children }) {
+  const [signoffsByParticipant, setSignoffsByParticipant] = useState(MOCK_SIGNOFFS);
+  return (
+    <MedicationDataContext.Provider value={{ signoffsByParticipant, setSignoffsByParticipant }}>
+      {children}
+    </MedicationDataContext.Provider>
+  );
+}
+function useMedicationData() {
+  const ctx = useContext(MedicationDataContext);
+  if (!ctx) throw new Error('useMedicationData must be used within a MedicationDataProvider');
+  return ctx;
+}
+
+const FoodDiaryContext = createContext(null);
+function FoodDiaryProvider({ children }) {
+  const [diaryByParticipant, setDiaryByParticipant] = useState(MOCK_FOOD_DIARY);
+  return (
+    <FoodDiaryContext.Provider value={{ diaryByParticipant, setDiaryByParticipant }}>
+      {children}
+    </FoodDiaryContext.Provider>
+  );
+}
+function useFoodDiary() {
+  const ctx = useContext(FoodDiaryContext);
+  if (!ctx) throw new Error('useFoodDiary must be used within a FoodDiaryProvider');
+  return ctx;
+}
+
+const SleepLogContext = createContext(null);
+function SleepLogDataProvider({ children }) {
+  const [logsByParticipant, setLogsByParticipant] = useState(MOCK_SLEEP_LOGS);
+  const [dayNotesByParticipant, setDayNotesByParticipant] = useState(MOCK_SLEEP_DAY_NOTES);
+  return (
+    <SleepLogContext.Provider value={{ logsByParticipant, setLogsByParticipant, dayNotesByParticipant, setDayNotesByParticipant }}>
+      {children}
+    </SleepLogContext.Provider>
+  );
+}
+function useSleepLogData() {
+  const ctx = useContext(SleepLogContext);
+  if (!ctx) throw new Error('useSleepLogData must be used within a SleepLogDataProvider');
+  return ctx;
+}
+
+
+/* ============================================================
    MEDICATION SIGN-OFF — dynamic dose times, staff attribution.
+   Signature is now stored on the sign-off record itself (was
+   previously captured into local state and then discarded when
+   the row was confirmed — the record never actually kept it).
    ============================================================ */
 function MedicationSignOff() {
   const { selectedParticipant, selectedId } = useParticipant();
   const { staffName } = useStaff();
-  const [signoffsByParticipant, setSignoffsByParticipant] = useState(MOCK_SIGNOFFS);
+  const { signoffsByParticipant, setSignoffsByParticipant } = useMedicationData();
   const [activeRow, setActiveRow] = useState(null);
   const [signature, setSignature] = useState(null);
   const [submitting, setSubmitting] = useState(false);
@@ -640,14 +721,29 @@ function MedicationSignOff() {
   const allSignoffs = signoffsByParticipant[selectedId] || [];
   const signoffs = allSignoffs.filter((s) => s.scheduled_date === date);
 
-  // Reset any open panels when the selected participant or date changes, so a
-  // stale row from a different participant/day can't stay expanded.
+  // NOTE: we intentionally do NOT clear activeRow/signature/notes when the
+  // participant or date changes anymore — the parent Dashboard now keeps
+  // this whole tab mounted (see App/Dashboard below) instead of unmounting
+  // it when the user switches tabs, so in-progress typing is preserved.
+  // Switching *participant* still makes sense to reset the open row though,
+  // since a row keyed to another participant is no longer relevant.
   useEffect(() => {
     setActiveRow(null);
-    setAddOpen(false);
     setSignature(null);
     setNotes('');
-  }, [selectedId, date]);
+  }, [selectedId]);
+
+  function openRow(s) {
+    if (s.status !== 'pending') return;
+    if (activeRow === s.id) {
+      setActiveRow(null);
+      return;
+    }
+    setActiveRow(s.id);
+    setSignature(s.signature || null);
+    setNotes(s.notes || '');
+    setPendingStatus('given');
+  }
 
   const submitSignOff = useCallback(
     async (signoffId) => {
@@ -661,7 +757,19 @@ function MedicationSignOff() {
       setSignoffsByParticipant((prev) => ({
         ...prev,
         [selectedId]: (prev[selectedId] || []).map((s) =>
-          s.id === signoffId ? { ...s, status: pendingStatus, recorded_by: staffName.trim() } : s
+          s.id === signoffId
+            ? {
+                ...s,
+                status: pendingStatus,
+                recorded_by: staffName.trim(),
+                // Persist the captured signature data URL onto the record so
+                // it survives after the row collapses — this is the actual
+                // fix for "signature doesn't save".
+                signature: pendingStatus === 'given' ? signature : s.signature || null,
+                notes: notes.trim(),
+                signed_at: new Date().toISOString(),
+              }
+            : s
         ),
       }));
       setActiveRow(null);
@@ -670,7 +778,7 @@ function MedicationSignOff() {
       setPendingStatus('given');
       setSubmitting(false);
     },
-    [pendingStatus, signature, selectedId, staffName]
+    [pendingStatus, signature, notes, selectedId, staffName]
   );
 
   function addDose() {
@@ -687,6 +795,7 @@ function MedicationSignOff() {
       status: 'pending',
       recorded_by: '',
       added_by: staffName.trim(),
+      signature: null,
     };
     setSignoffsByParticipant((prev) => ({
       ...prev,
@@ -753,7 +862,7 @@ function MedicationSignOff() {
           <div key={s.id} className="rounded-xl border border-slate-200 overflow-hidden">
             <button
               type="button"
-              onClick={() => s.status === 'pending' && setActiveRow(activeRow === s.id ? null : s.id)}
+              onClick={() => openRow(s)}
               disabled={s.status !== 'pending'}
               className="w-full flex items-center justify-between gap-3 px-4 py-3 bg-white disabled:cursor-default"
             >
@@ -767,6 +876,13 @@ function MedicationSignOff() {
                 </p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
+                {s.signature && (
+                  <img
+                    src={s.signature}
+                    alt="Signature"
+                    className="h-7 w-14 object-contain border border-slate-200 rounded bg-white"
+                  />
+                )}
                 <span className={`text-xs font-semibold px-2 py-1 rounded-full ${STATUS_STYLES[s.status]}`}>
                   {s.status}
                 </span>
@@ -808,7 +924,12 @@ function MedicationSignOff() {
                   rows={2}
                 />
 
-                {pendingStatus === 'given' && <SignaturePad onChange={setSignature} />}
+                {pendingStatus === 'given' && (
+                  <SignaturePad onChange={setSignature} value={signature} />
+                )}
+                {pendingStatus === 'given' && signature && (
+                  <p className="text-xs text-emerald-600 font-medium">Signature captured ✓</p>
+                )}
 
                 <button
                   type="button"
@@ -882,14 +1003,13 @@ function MedicationSignOff() {
     </div>
   );
 }
-
 /* ============================================================
    FOOD DIARY — weekly grid, staff attribution on save.
    ============================================================ */
 function FoodDiaryGrid() {
   const { selectedParticipant, selectedId } = useParticipant();
   const { staffName } = useStaff();
-  const [diaryByParticipant, setDiaryByParticipant] = useState(MOCK_FOOD_DIARY);
+  const { diaryByParticipant, setDiaryByParticipant } = useFoodDiary();
   const [activeCell, setActiveCell] = useState(null);
   const [draft, setDraft] = useState({ description: '', fluids_ml: '', notes: '' });
   const [weekOffset, setWeekOffset] = useState(0); // 0 = this week, -1 = last week, +1 = next week...
@@ -898,7 +1018,10 @@ function FoodDiaryGrid() {
   const weekDates = useMemo(() => generateWeekDates(weekStartDate), [weekStartDate]);
   const participantDiary = diaryByParticipant[selectedId] || {};
 
-  useEffect(() => { setActiveCell(null); }, [selectedId, weekOffset]);
+  // Only reset the open cell when the participant changes — the tab now
+  // stays mounted across navigation, so we don't want to blow away an
+  // in-progress entry just because the worker paged the week forward/back.
+  useEffect(() => { setActiveCell(null); }, [selectedId]);
 
   function openCell(date, mealKey) {
     const existing = participantDiary[date]?.[mealKey] || { description: '', fluids_ml: '', notes: '' };
@@ -1095,16 +1218,18 @@ function FoodDiaryGrid() {
     </div>
   );
 }
-
 /* ============================================================
-   SLEEP LOG — dynamic overnight check times per date, staff
-   attribution, editable/removable slots.
+   SLEEP LOG — 24-hour horizontal timeline grid (AM row + PM row)
+   plus a dedicated persistent Notes section for the day.
+   Redesigned per spec while reusing all existing style tokens
+   (hhcs-bg-navy-tint, hhcs-chip-active, SLEEP_STATUS_STYLES,
+   hhcs-input, etc.) so nothing about the visual language changes.
    ============================================================ */
 const SLEEP_STATUS_STYLES = {
-  pending: 'bg-slate-100 text-slate-500',
-  asleep: 'bg-indigo-100 text-indigo-700',
-  awake: 'bg-amber-100 text-amber-700',
-  checked: 'bg-emerald-100 text-emerald-700',
+  pending: 'bg-slate-100 text-slate-400 border-slate-200',
+  asleep: 'bg-indigo-100 text-indigo-700 border-indigo-200',
+  awake: 'bg-amber-100 text-amber-700 border-amber-200',
+  checked: 'bg-emerald-100 text-emerald-700 border-emerald-200',
 };
 
 function formatSlot(time24) {
@@ -1114,90 +1239,144 @@ function formatSlot(time24) {
   return `${hour12}:${String(m).padStart(2, '0')} ${period}`;
 }
 
-// No participant sleeps on a fixed schedule, so a new day starts with
-// no check times at all — the worker adds exactly the hours that
-// applied to that participant that day (could be 7pm-7am, could be a
-// single 2am check, could be a daytime nap).
-function defaultDayLogs() {
-  return [];
+// Builds the 24 hour-cell definitions used by the AM/PM grid rows.
+// Each cell carries its 24h key (e.g. "13:00") so it can be matched
+// against saved slots, plus a friendly AM/PM label for display.
+function buildHourCells(startHour) {
+  return Array.from({ length: 12 }, (_, i) => {
+    const h = startHour + i;
+    const hour12 = h % 12 === 0 ? 12 : h % 12;
+    const period = h >= 12 ? 'PM' : 'AM';
+    return { hour: h, key: `${pad2(h)}:00`, label: `${hour12}${i === 0 ? ' ' + period : ''}` };
+  });
 }
+const AM_CELLS = buildHourCells(0);
+const PM_CELLS = buildHourCells(12);
 
 function SleepLog() {
   const { selectedParticipant, selectedId } = useParticipant();
   const { staffName } = useStaff();
-  const [logsByParticipant, setLogsByParticipant] = useState(MOCK_SLEEP_LOGS);
+  const { logsByParticipant, setLogsByParticipant, dayNotesByParticipant, setDayNotesByParticipant } = useSleepLogData();
   const [date, setDate] = useState(TODAY_STR);
-  const [weekOffset, setWeekOffset] = useState(0);
-  const [activeSlot, setActiveSlot] = useState(null);
-  const [draft, setDraft] = useState({ status: 'asleep', how_awoken: AWOKEN_OPTIONS[0], mood: MOOD_OPTIONS[0], notes: '', time_slot: '' });
-  const [addOpen, setAddOpen] = useState(false);
-  const [newTime, setNewTime] = useState('12:00');
+  const [activeHour, setActiveHour] = useState(null); // "HH:00" key currently being edited
+  const [draft, setDraft] = useState({ time_slot: '', status: 'asleep', how_awoken: AWOKEN_OPTIONS[0], mood: MOOD_OPTIONS[0], notes: '' });
+  const [dayNotesDraft, setDayNotesDraft] = useState('');
+  const [notesSaved, setNotesSaved] = useState(true);
 
-  const weekStartDate = useMemo(() => addDays(CURRENT_WEEK_START, weekOffset * 7), [weekOffset]);
-  const weekDates = useMemo(() => generateWeekDates(weekStartDate), [weekStartDate]);
-  const dayLogs = logsByParticipant[selectedId]?.[date] || defaultDayLogs();
+  const dayLogs = logsByParticipant[selectedId]?.[date] || [];
+  const savedDayNotes = dayNotesByParticipant[selectedId]?.[date] || '';
 
+  // Tab stays mounted across navigation now, so we only reset the open
+  // editor when participant changes — paging days shouldn't nuke an
+  // in-progress edit for a different date the worker is mid-way through.
   useEffect(() => {
-    setActiveSlot(null);
-    setAddOpen(false);
+    setActiveHour(null);
+  }, [selectedId]);
+
+  // Keep the notes textarea in sync with saved data whenever the
+  // participant or date changes, without clobbering the notes if the
+  // underlying saved value hasn't actually changed.
+  useEffect(() => {
+    setDayNotesDraft(savedDayNotes);
+    setNotesSaved(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, date]);
 
-  function toggleSlot(slot) {
-    if (activeSlot === slot.id) {
-      setActiveSlot(null);
-      return;
-    }
-    setDraft({
-      status: slot.status === 'pending' ? 'asleep' : slot.status,
-      how_awoken: slot.how_awoken || AWOKEN_OPTIONS[0],
-      mood: slot.mood || MOOD_OPTIONS[0],
-      notes: slot.notes || '',
-      time_slot: slot.time_slot,
-    });
-    setActiveSlot(slot.id);
+  function findSlotForHour(hourKey) {
+    return dayLogs.find((s) => s.time_slot.slice(0, 2) === hourKey.slice(0, 2));
   }
 
-  function saveSlot() {
+  function openHour(hourKey) {
+    if (activeHour === hourKey) {
+      setActiveHour(null);
+      return;
+    }
+    const existing = findSlotForHour(hourKey);
+    setDraft({
+      time_slot: existing?.time_slot || hourKey,
+      status: existing?.status || 'asleep',
+      how_awoken: existing?.how_awoken || AWOKEN_OPTIONS[0],
+      mood: existing?.mood || MOOD_OPTIONS[0],
+      notes: existing?.notes || '',
+    });
+    setActiveHour(hourKey);
+  }
+
+  function saveHour(hourKey) {
     if (!requireStaffName(staffName)) return;
     setLogsByParticipant((prev) => {
       const participantLogs = { ...(prev[selectedId] || {}) };
-      const existingDay = participantLogs[date] || defaultDayLogs();
-      const updatedDay = existingDay
-        .map((s) => (s.id === activeSlot ? { ...s, ...draft, recorded_by: staffName.trim() } : s))
-        .sort((a, b) => a.time_slot.localeCompare(b.time_slot));
+      const existingDay = participantLogs[date] || [];
+      const existing = existingDay.find((s) => s.time_slot.slice(0, 2) === hourKey.slice(0, 2));
+      let updatedDay;
+      if (existing) {
+        updatedDay = existingDay.map((s) =>
+          s.id === existing.id ? { ...s, ...draft, recorded_by: staffName.trim() } : s
+        );
+      } else {
+        updatedDay = [
+          ...existingDay,
+          { id: `sl-${Date.now()}`, ...draft, recorded_by: staffName.trim() },
+        ];
+      }
+      updatedDay.sort((a, b) => a.time_slot.localeCompare(b.time_slot));
       participantLogs[date] = updatedDay;
       return { ...prev, [selectedId]: participantLogs };
     });
-    setActiveSlot(null);
+    setActiveHour(null);
   }
 
-  function removeSlot(slotId) {
+  function removeHour(hourKey) {
     setLogsByParticipant((prev) => {
       const participantLogs = { ...(prev[selectedId] || {}) };
-      const existingDay = participantLogs[date] || defaultDayLogs();
-      participantLogs[date] = existingDay.filter((s) => s.id !== slotId);
+      const existingDay = participantLogs[date] || [];
+      participantLogs[date] = existingDay.filter((s) => s.time_slot.slice(0, 2) !== hourKey.slice(0, 2));
       return { ...prev, [selectedId]: participantLogs };
     });
-    if (activeSlot === slotId) setActiveSlot(null);
+    setActiveHour(null);
   }
 
-  function addSlot() {
+  function saveDayNotes() {
     if (!requireStaffName(staffName)) return;
-    setLogsByParticipant((prev) => {
-      const participantLogs = { ...(prev[selectedId] || {}) };
-      const existingDay = participantLogs[date] || defaultDayLogs();
-      const entry = {
-        id: `new-${Date.now()}`, time_slot: newTime, status: 'pending', how_awoken: '', mood: '', notes: '', recorded_by: '', added_by: staffName.trim(),
-      };
-      participantLogs[date] = [...existingDay, entry].sort((a, b) => a.time_slot.localeCompare(b.time_slot));
-      return { ...prev, [selectedId]: participantLogs };
+    setDayNotesByParticipant((prev) => {
+      const participantNotes = { ...(prev[selectedId] || {}) };
+      participantNotes[date] = dayNotesDraft;
+      return { ...prev, [selectedId]: participantNotes };
     });
-    setAddOpen(false);
+    setNotesSaved(true);
   }
 
   if (!selectedParticipant) {
     return <p className="text-slate-400 text-sm">Select a participant to view their sleep log.</p>;
   }
+
+  const renderRow = (cells, rowLabel) => (
+    <div>
+      <p className="text-xs font-semibold hhcs-text-navy mb-1">{rowLabel}</p>
+      <div className="grid grid-cols-12 gap-1">
+        {cells.map((cell) => {
+          const slot = findSlotForHour(cell.key);
+          const status = slot?.status || 'pending';
+          const isActive = activeHour === cell.key;
+          return (
+            <button
+              key={cell.key}
+              type="button"
+              onClick={() => openHour(cell.key)}
+              title={slot ? `${formatSlot(slot.time_slot)} · ${slot.status}` : `${cell.label} ${rowLabel} — tap to log`}
+              className={`h-12 rounded-md border text-[11px] font-semibold flex flex-col items-center justify-center leading-tight
+                ${SLEEP_STATUS_STYLES[status]}
+                ${isActive ? 'ring-2 ring-offset-1' : ''}`}
+              style={isActive ? { boxShadow: '0 0 0 2px var(--hhcs-teal)' } : undefined}
+            >
+              <span>{cell.label}</span>
+              {slot && <span className="text-[9px] normal-case">{slot.time_slot.slice(3, 5)}</span>}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
 
   return (
     <div className="space-y-3">
@@ -1205,204 +1384,176 @@ function SleepLog() {
         <h2 className="font-semibold text-slate-800">Sleep Log — {selectedParticipant.name}</h2>
       </div>
 
-      <div className="flex items-center gap-1">
+      <div className="flex items-center justify-between rounded-lg hhcs-bg-navy-tint px-2 py-1.5">
         <button
           type="button"
-          onClick={() => setWeekOffset((o) => o - 1)}
-          className="px-1.5 py-1 hhcs-text-navy font-bold shrink-0"
-          aria-label="Previous week"
+          onClick={() => setDate((d) => addDays(d, -1))}
+          className="px-2 py-1 hhcs-text-navy font-bold"
+          aria-label="Previous day"
         >
           ‹
         </button>
-        <div className="flex gap-1.5 overflow-x-auto pb-1 flex-1">
-          {weekDates.map((d) => (
+        <div className="text-center">
+          <p className="text-xs font-semibold hhcs-text-navy">
+            {FULL_DATE_LABEL(date)}{date === TODAY_STR ? ' (Today)' : ''}
+          </p>
+          {date !== TODAY_STR && (
             <button
-              key={d}
               type="button"
-              onClick={() => setDate(d)}
-              className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium border relative
-                ${d === date ? 'hhcs-chip-active' : 'bg-white text-slate-600 border-slate-200'}
-                ${d === TODAY_STR && d !== date ? 'hhcs-border-teal' : ''}`}
+              onClick={() => setDate(TODAY_STR)}
+              className="text-xs hhcs-text-teal font-medium underline"
             >
-              {DAY_LABEL(d)}{d === TODAY_STR ? ' •' : ''}
+              Back to today
             </button>
-          ))}
+          )}
         </div>
         <button
           type="button"
-          onClick={() => setWeekOffset((o) => o + 1)}
-          className="px-1.5 py-1 hhcs-text-navy font-bold shrink-0"
-          aria-label="Next week"
+          onClick={() => setDate((d) => addDays(d, 1))}
+          className="px-2 py-1 hhcs-text-navy font-bold"
+          aria-label="Next day"
         >
           ›
         </button>
       </div>
-      {weekOffset !== 0 && (
-        <button
-          type="button"
-          onClick={() => { setWeekOffset(0); setDate(TODAY_STR); }}
-          className="text-xs hhcs-text-teal font-medium underline"
-        >
-          Back to today
-        </button>
-      )}
 
-      {dayLogs.length === 0 && (
-        <p className="text-sm text-slate-400 text-center py-4">
-          No check times logged for {DAY_LABEL(date)} yet — add the hours below.
-        </p>
-      )}
-
-      <div className="space-y-2">
-        {dayLogs.map((slot) => (
-          <div key={slot.id} className="rounded-xl border border-slate-200 overflow-hidden">
-            <button
-              type="button"
-              onClick={() => toggleSlot(slot)}
-              className="w-full flex items-center justify-between gap-3 px-4 py-3 bg-white"
-            >
-              <div className="text-left">
-                <p className="font-medium text-slate-800 text-sm">{formatSlot(slot.time_slot)}</p>
-                {slot.recorded_by
-                  ? <p className="text-xs hhcs-text-teal">by {slot.recorded_by}</p>
-                  : slot.added_by ? <p className="text-xs hhcs-text-teal">added by {slot.added_by}</p> : null}
-              </div>
-              <div className="flex items-center gap-2">
-                {slot.mood && <span className="text-xs text-slate-400 hidden sm:inline">{slot.mood}</span>}
-                <span className={`text-xs font-semibold px-2 py-1 rounded-full ${SLEEP_STATUS_STYLES[slot.status]}`}>
-                  {slot.status}
-                </span>
-                <span
-                  role="button"
-                  tabIndex={0}
-                  onClick={(e) => { e.stopPropagation(); removeSlot(slot.id); }}
-                  className="text-xs text-slate-300 hover:text-red-500"
-                  title="Remove this check time"
-                >
-                  ✕
-                </span>
-              </div>
-            </button>
-
-            {activeSlot === slot.id && (
-              <div className="p-4 border-t border-slate-100 bg-slate-50 space-y-3">
-                <div className="flex gap-2 items-center">
-                  <label className="text-xs font-medium text-slate-500 shrink-0">Check time</label>
-                  <input
-                    type="time"
-                    value={draft.time_slot}
-                    onChange={(e) => setDraft((d) => ({ ...d, time_slot: e.target.value }))}
-                    className="hhcs-input rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                  />
-                </div>
-
-                <div className="flex gap-2">
-                  {['asleep', 'awake', 'checked'].map((opt) => (
-                    <button
-                      key={opt}
-                      type="button"
-                      onClick={() => setDraft((d) => ({ ...d, status: opt }))}
-                      className={`flex-1 text-sm font-medium py-2 rounded-lg border
-                        ${draft.status === opt ? 'hhcs-chip-active' : 'bg-white text-slate-600 border-slate-200'}`}
-                    >
-                      {opt.charAt(0).toUpperCase() + opt.slice(1)}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-xs font-medium text-slate-500">How awoken</label>
-                    <select
-                      value={draft.how_awoken}
-                      onChange={(e) => setDraft((d) => ({ ...d, how_awoken: e.target.value }))}
-                      className="hhcs-input w-full rounded-lg border border-slate-200 px-2 py-2 text-sm mt-1"
-                    >
-                      {AWOKEN_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-xs font-medium text-slate-500">Mood</label>
-                    <select
-                      value={draft.mood}
-                      onChange={(e) => setDraft((d) => ({ ...d, mood: e.target.value }))}
-                      className="hhcs-input w-full rounded-lg border border-slate-200 px-2 py-2 text-sm mt-1"
-                    >
-                      {MOOD_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
-                    </select>
-                  </div>
-                </div>
-
-                <textarea
-                  placeholder="Notes"
-                  value={draft.notes}
-                  onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))}
-                  rows={2}
-                  className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                />
-
-                <button
-                  type="button"
-                  onClick={saveSlot}
-                  disabled={!staffName.trim()}
-                  className="hhcs-btn-primary w-full font-semibold py-2.5 rounded-lg disabled:cursor-not-allowed"
-                >
-                  Save Check
-                </button>
-                {!staffName.trim() && (
-                  <p className="text-xs text-red-600 font-medium">
-                    Enter your name or initials at the top of the page to save.
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
-        ))}
+      <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-3">
+        {renderRow(AM_CELLS, 'AM')}
+        {renderRow(PM_CELLS, 'PM')}
+        <div className="flex flex-wrap gap-3 pt-1">
+          {Object.entries(SLEEP_STATUS_STYLES).map(([key, cls]) => (
+            <span key={key} className="flex items-center gap-1 text-[11px] text-slate-500">
+              <span className={`inline-block w-3 h-3 rounded border ${cls}`} />
+              {key.charAt(0).toUpperCase() + key.slice(1)}
+            </span>
+          ))}
+        </div>
       </div>
 
-      {/* Dynamic check-time entry — not locked to the default overnight schedule. */}
-      {addOpen ? (
-        <div className="rounded-xl border hhcs-border-teal bg-white p-4 space-y-3">
-          <p className="text-sm font-semibold text-slate-700">Add check time</p>
-          <input
-            type="time"
-            value={newTime}
-            onChange={(e) => setNewTime(e.target.value)}
+      {activeHour && (
+        <div className="rounded-xl border hhcs-border-teal hhcs-bg-teal-tint p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-semibold text-slate-700">
+              Editing {formatSlot(draft.time_slot || activeHour)}
+            </p>
+            {findSlotForHour(activeHour) && (
+              <button
+                type="button"
+                onClick={() => removeHour(activeHour)}
+                className="text-xs text-red-500 font-medium"
+              >
+                Remove entry
+              </button>
+            )}
+          </div>
+
+          <div className="flex gap-2 items-center">
+            <label className="text-xs font-medium text-slate-500 shrink-0">Exact time</label>
+            <input
+              type="time"
+              value={draft.time_slot}
+              onChange={(e) => setDraft((d) => ({ ...d, time_slot: e.target.value }))}
+              className="hhcs-input rounded-lg border border-slate-200 px-3 py-2 text-sm"
+            />
+            <span className="text-xs text-slate-400">{formatSlot(draft.time_slot || activeHour)}</span>
+          </div>
+
+          <div className="flex gap-2">
+            {['asleep', 'awake', 'checked'].map((opt) => (
+              <button
+                key={opt}
+                type="button"
+                onClick={() => setDraft((d) => ({ ...d, status: opt }))}
+                className={`flex-1 text-sm font-medium py-2 rounded-lg border
+                  ${draft.status === opt ? 'hhcs-chip-active' : 'bg-white text-slate-600 border-slate-200'}`}
+              >
+                {opt.charAt(0).toUpperCase() + opt.slice(1)}
+              </button>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs font-medium text-slate-500">How awoken</label>
+              <select
+                value={draft.how_awoken}
+                onChange={(e) => setDraft((d) => ({ ...d, how_awoken: e.target.value }))}
+                className="hhcs-input w-full rounded-lg border border-slate-200 px-2 py-2 text-sm mt-1"
+              >
+                {AWOKEN_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-500">Mood</label>
+              <select
+                value={draft.mood}
+                onChange={(e) => setDraft((d) => ({ ...d, mood: e.target.value }))}
+                className="hhcs-input w-full rounded-lg border border-slate-200 px-2 py-2 text-sm mt-1"
+              >
+                {MOOD_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <textarea
+            placeholder="Notes for this check"
+            value={draft.notes}
+            onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))}
+            rows={2}
             className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
           />
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => setAddOpen(false)}
-              className="flex-1 py-2 rounded-lg border border-slate-300 text-slate-600 text-sm font-medium"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={addSlot}
-              className="hhcs-btn-primary flex-1 py-2 rounded-lg text-sm font-semibold"
-            >
-              Add
-            </button>
-          </div>
+
+          <button
+            type="button"
+            onClick={() => saveHour(activeHour)}
+            disabled={!staffName.trim()}
+            className="hhcs-btn-primary w-full font-semibold py-2.5 rounded-lg disabled:cursor-not-allowed"
+          >
+            Save Check
+          </button>
+          {!staffName.trim() && (
+            <p className="text-xs text-red-600 font-medium">
+              Enter your name or initials at the top of the page to save.
+            </p>
+          )}
         </div>
-      ) : (
-        <button
-          type="button"
-          onClick={() => setAddOpen(true)}
-          className="w-full py-2.5 rounded-lg border-2 border-dashed hhcs-border-teal hhcs-text-teal text-sm font-semibold"
-        >
-          + Add check time
-        </button>
       )}
+
+      {/* Dedicated day-level notes — separate from per-hour check notes,
+          fully persistent per participant + date. */}
+      <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
+        <p className="text-sm font-semibold text-slate-700">Sleep Notes — {FULL_DATE_LABEL(date)}</p>
+        <textarea
+          value={dayNotesDraft}
+          onChange={(e) => { setDayNotesDraft(e.target.value); setNotesSaved(e.target.value === savedDayNotes); }}
+          rows={4}
+          placeholder="Overall observations about the participant's sleep for the day/night..."
+          className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+        />
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-slate-400">{notesSaved ? 'Saved' : 'Unsaved changes'}</span>
+          <button
+            type="button"
+            onClick={saveDayNotes}
+            disabled={notesSaved || !staffName.trim()}
+            className="hhcs-btn-primary px-4 py-2 rounded-lg text-sm font-semibold disabled:cursor-not-allowed"
+          >
+            Save Notes
+          </button>
+        </div>
+        {!staffName.trim() && (
+          <p className="text-xs text-red-600 font-medium">
+            Enter your name or initials at the top of the page to save.
+          </p>
+        )}
+      </div>
     </div>
   );
 }
-
 /* ============================================================
    PROGRESS NOTES — free-text shift notes per participant,
-   categorized, staff attribution, newest first.
+   categorized, staff attribution, newest first. Saved notes can
+   now be edited in place via an Edit button on each note.
    ============================================================ */
 const PROGRESS_CATEGORIES = ['General', 'Behaviour', 'Health', 'Community Access', 'Goals & Skill Building', 'Social/Emotional'];
 
@@ -1414,6 +1565,9 @@ function ProgressNotes() {
   const [formOpen, setFormOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [draft, setDraft] = useState({ date: TODAY_STR, category: PROGRESS_CATEGORIES[0], note: '' });
+  const [editingId, setEditingId] = useState(null);
+  const [editDraft, setEditDraft] = useState({ category: PROGRESS_CATEGORIES[0], note: '' });
+  const [savingEditId, setSavingEditId] = useState(null);
 
   const loadNotes = useCallback(async () => {
     if (!selectedId) return;
@@ -1428,11 +1582,16 @@ function ProgressNotes() {
     setLoadingNotes(false);
   }, [selectedId]);
 
+  // Only refetch/reset when the participant changes — this tab now stays
+  // mounted across tab switches, so an in-progress "write a note" draft
+  // (or an open edit) isn't wiped just by tapping another tab and back.
   useEffect(() => {
     setFormOpen(false);
+    setEditingId(null);
     setDraft({ date: TODAY_STR, category: PROGRESS_CATEGORIES[0], note: '' });
     loadNotes();
-  }, [selectedId, loadNotes]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
 
   async function saveNote() {
     if (!requireStaffName(staffName)) return;
@@ -1462,6 +1621,45 @@ function ProgressNotes() {
   async function removeNote(id) {
     const { error } = await supabase.from('progress_notes').delete().eq('id', id);
     if (!error) setNotes((prev) => prev.filter((n) => n.id !== id));
+  }
+
+  function startEdit(n) {
+    setEditingId(n.id);
+    setEditDraft({ category: n.category, note: n.note });
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+  }
+
+  async function saveEdit(id) {
+    if (!editDraft.note.trim()) {
+      alert('Note text cannot be empty.');
+      return;
+    }
+    setSavingEditId(id);
+    const { error } = await supabase
+      .from('progress_notes')
+      .update({
+        category: editDraft.category,
+        note: editDraft.note.trim(),
+        edited_by: staffName.trim() || undefined,
+        edited_at: new Date().toISOString(),
+      })
+      .eq('id', id);
+    if (error) {
+      alert('Could not save changes: ' + error.message);
+    } else {
+      setNotes((prev) =>
+        prev.map((n) =>
+          n.id === id
+            ? { ...n, category: editDraft.category, note: editDraft.note.trim(), edited_by: staffName.trim(), edited_at: new Date().toISOString() }
+            : n
+        )
+      );
+      setEditingId(null);
+    }
+    setSavingEditId(null);
   }
 
   if (!selectedParticipant) {
@@ -1549,23 +1747,77 @@ function ProgressNotes() {
         {notes.map((n) => (
           <div key={n.id} className="rounded-xl border border-slate-200 bg-white p-4">
             <div className="flex items-center justify-between gap-2 mb-1">
-              <span className="text-xs font-semibold px-2 py-1 rounded-full hhcs-bg-navy-tint hhcs-text-navy">
-                {n.category}
-              </span>
-              <span
-                role="button"
-                tabIndex={0}
-                onClick={() => removeNote(n.id)}
-                className="text-xs text-slate-300 hover:text-red-500"
-                title="Remove this note"
-              >
-                ✕
-              </span>
+              {editingId === n.id ? (
+                <select
+                  value={editDraft.category}
+                  onChange={(e) => setEditDraft((d) => ({ ...d, category: e.target.value }))}
+                  className="hhcs-input text-xs font-semibold rounded-full hhcs-bg-navy-tint hhcs-text-navy border-0 px-2 py-1"
+                >
+                  {PROGRESS_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              ) : (
+                <span className="text-xs font-semibold px-2 py-1 rounded-full hhcs-bg-navy-tint hhcs-text-navy">
+                  {n.category}
+                </span>
+              )}
+              <div className="flex items-center gap-3 shrink-0">
+                {editingId !== n.id && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => startEdit(n)}
+                    className="text-xs hhcs-text-teal font-medium underline"
+                  >
+                    Edit
+                  </span>
+                )}
+                <span
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => removeNote(n.id)}
+                  className="text-xs text-slate-300 hover:text-red-500"
+                  title="Remove this note"
+                >
+                  ✕
+                </span>
+              </div>
             </div>
-            <p className="text-sm text-slate-700 whitespace-pre-wrap">{n.note}</p>
-            <p className="text-xs text-slate-400 mt-2">
-              {FULL_DATE_LABEL(n.date)} · {n.time?.slice(0, 5)} · by {n.recorded_by}
-            </p>
+
+            {editingId === n.id ? (
+              <div className="space-y-2">
+                <textarea
+                  value={editDraft.note}
+                  onChange={(e) => setEditDraft((d) => ({ ...d, note: e.target.value }))}
+                  rows={4}
+                  className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                />
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={cancelEdit}
+                    className="flex-1 py-2 rounded-lg border border-slate-300 text-slate-600 text-sm font-medium"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => saveEdit(n.id)}
+                    disabled={savingEditId === n.id}
+                    className="hhcs-btn-primary flex-1 py-2 rounded-lg text-sm font-semibold disabled:cursor-not-allowed"
+                  >
+                    {savingEditId === n.id ? 'Saving...' : 'Save Changes'}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <p className="text-sm text-slate-700 whitespace-pre-wrap">{n.note}</p>
+                <p className="text-xs text-slate-400 mt-2">
+                  {FULL_DATE_LABEL(n.date)} · {n.time?.slice(0, 5)} · by {n.recorded_by}
+                  {n.edited_at ? ` · edited by ${n.edited_by || n.recorded_by}` : ''}
+                </p>
+              </>
+            )}
           </div>
         ))}
         {loadingNotes && <p className="text-xs text-slate-400 text-center">Loading...</p>}
@@ -1573,7 +1825,6 @@ function ProgressNotes() {
     </div>
   );
 }
-
 /* ============================================================
    INCIDENT REPORT — structured incident capture per participant,
    severity-tagged, staff attribution.
@@ -1627,7 +1878,8 @@ function IncidentReport() {
     setFormOpen(false);
     setDraft(blankIncidentDraft());
     loadIncidents();
-  }, [selectedId, loadIncidents]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
 
   async function saveIncident() {
     if (!requireStaffName(staffName)) return;
@@ -1855,6 +2107,140 @@ function IncidentReport() {
     </div>
   );
 }
+/* ============================================================
+   PHOTO GALLERY — upload photos from device, permanently stored
+   in Supabase Storage (bucket: "gallery-photos") with metadata
+   (who uploaded, participant, timestamp) in a "gallery_photos"
+   table. Requires those two objects to exist in your Supabase
+   project — see the setup note at the bottom of this file.
+   ============================================================ */
+function GalleryTab() {
+  const { selectedParticipant, selectedId } = useParticipant();
+  const { staffName } = useStaff();
+  const [photos, setPhotos] = useState([]);
+  const [loadingPhotos, setLoadingPhotos] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
+  const fileInputRef = useRef(null);
+
+  const loadPhotos = useCallback(async () => {
+    if (!selectedId) return;
+    setLoadingPhotos(true);
+    const { data, error } = await supabase
+      .from('gallery_photos')
+      .select('*')
+      .eq('participant_id', selectedId)
+      .order('uploaded_at', { ascending: false });
+    if (!error) setPhotos(data || []);
+    setLoadingPhotos(false);
+  }, [selectedId]);
+
+  useEffect(() => {
+    loadPhotos();
+  }, [selectedId, loadPhotos]);
+
+  async function handleFiles(fileList) {
+    if (!requireStaffName(staffName)) return;
+    const files = Array.from(fileList || []).filter((f) => f.type.startsWith('image/'));
+    if (files.length === 0) return;
+    setUploading(true);
+    setUploadError('');
+    for (const file of files) {
+      const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+      const path = `${selectedId}/${Date.now()}-${safeName}`;
+      const { error: uploadErr } = await supabase.storage.from('gallery-photos').upload(path, file, {
+        cacheControl: '3600',
+        upsert: false,
+      });
+      if (uploadErr) {
+        setUploadError(uploadErr.message);
+        continue;
+      }
+      const { data: publicUrlData } = supabase.storage.from('gallery-photos').getPublicUrl(path);
+      const { error: insertErr } = await supabase.from('gallery_photos').insert({
+        participant_id: selectedId,
+        storage_path: path,
+        url: publicUrlData?.publicUrl || null,
+        uploaded_by: staffName.trim(),
+        uploaded_at: new Date().toISOString(),
+      });
+      if (insertErr) setUploadError(insertErr.message);
+    }
+    await loadPhotos();
+    setUploading(false);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }
+
+  async function removePhoto(photo) {
+    await supabase.storage.from('gallery-photos').remove([photo.storage_path]);
+    const { error } = await supabase.from('gallery_photos').delete().eq('id', photo.id);
+    if (!error) setPhotos((prev) => prev.filter((p) => p.id !== photo.id));
+  }
+
+  if (!selectedParticipant) {
+    return <p className="text-slate-400 text-sm">Select a participant to view their photo gallery.</p>;
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <h2 className="font-semibold text-slate-800">Gallery — {selectedParticipant.name}</h2>
+      </div>
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        multiple
+        capture="environment"
+        onChange={(e) => handleFiles(e.target.files)}
+        className="hidden"
+      />
+      <button
+        type="button"
+        onClick={() => fileInputRef.current?.click()}
+        disabled={uploading}
+        className="w-full py-2.5 rounded-lg border-2 border-dashed hhcs-border-teal hhcs-text-teal text-sm font-semibold disabled:opacity-60"
+      >
+        {uploading ? 'Uploading...' : '+ Upload photo(s) from device'}
+      </button>
+      {uploadError && (
+        <p className="text-xs text-red-600 font-medium">{uploadError}</p>
+      )}
+      {!staffName.trim() && (
+        <p className="text-xs text-red-600 font-medium">
+          Enter your name or initials at the top of the page before uploading.
+        </p>
+      )}
+
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        {photos.map((p) => (
+          <div key={p.id} className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+            <img src={p.url} alt="Uploaded" className="w-full h-32 object-cover" />
+            <div className="p-2">
+              <p className="text-xs font-medium text-slate-700 truncate">{p.uploaded_by}</p>
+              <p className="text-[10px] text-slate-400">
+                {new Date(p.uploaded_at).toLocaleString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+              </p>
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={() => removePhoto(p)}
+                className="text-[10px] text-slate-300 hover:text-red-500"
+              >
+                Remove
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+      {photos.length === 0 && !loadingPhotos && (
+        <p className="text-sm text-slate-400 text-center py-4">No photos uploaded yet.</p>
+      )}
+      {loadingPhotos && <p className="text-xs text-slate-400 text-center">Loading...</p>}
+    </div>
+  );
+}
 
 /* ============================================================
    TAB NAVIGATION
@@ -1865,6 +2251,7 @@ const TABS = [
   { key: 'sleep', label: 'Sleep Log' },
   { key: 'progress', label: 'Progress Notes' },
   { key: 'incident', label: 'Incident Report' },
+  { key: 'gallery', label: 'Gallery' },
 ];
 
 function TabNav({ active, onChange }) {
@@ -1884,7 +2271,164 @@ function TabNav({ active, onChange }) {
     </div>
   );
 }
+/* ============================================================
+   SHIFT REPORT — aggregates today's Medication, Food Diary,
+   Sleep Log, Progress Notes, Incident Reports and Gallery
+   photos for the selected participant into one printable view.
+   "Download" uses the browser's native print-to-PDF via
+   window.print(), scoped with an @media print rule (see
+   THEME_CSS) so only the report itself is printed.
+   ============================================================ */
+function ShiftReportButton() {
+  const { selectedParticipant, selectedId } = useParticipant();
+  const { signoffsByParticipant } = useMedicationData();
+  const { diaryByParticipant } = useFoodDiary();
+  const { logsByParticipant, dayNotesByParticipant } = useSleepLogData();
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [progressNotes, setProgressNotes] = useState([]);
+  const [incidents, setIncidents] = useState([]);
+  const [photos, setPhotos] = useState([]);
 
+  async function generateReport() {
+    if (!selectedId) return;
+    setLoading(true);
+    const [{ data: notesData }, { data: incidentsData }, { data: photosData }] = await Promise.all([
+      supabase.from('progress_notes').select('*').eq('participant_id', selectedId).eq('date', TODAY_STR),
+      supabase.from('incidents').select('*').eq('participant_id', selectedId).eq('date', TODAY_STR),
+      supabase.from('gallery_photos').select('*').eq('participant_id', selectedId),
+    ]);
+    setProgressNotes(notesData || []);
+    setIncidents(incidentsData || []);
+    setPhotos(photosData || []);
+    setLoading(false);
+    setOpen(true);
+  }
+
+  if (!selectedParticipant) return null;
+
+  const todaysMeds = (signoffsByParticipant[selectedId] || []).filter((s) => s.scheduled_date === TODAY_STR);
+  const foodToday = diaryByParticipant[selectedId]?.[TODAY_STR] || {};
+  const sleepToday = logsByParticipant[selectedId]?.[TODAY_STR] || [];
+  const sleepNotesToday = dayNotesByParticipant[selectedId]?.[TODAY_STR] || '';
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={generateReport}
+        disabled={loading}
+        className="w-full py-2.5 rounded-lg hhcs-btn-primary text-sm font-semibold disabled:cursor-not-allowed"
+      >
+        {loading ? 'Preparing report...' : 'Download & Print Shift Report'}
+      </button>
+
+      {open && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center overflow-y-auto p-4">
+          <div className="bg-white rounded-xl max-w-2xl w-full my-8 p-6" id="hhcs-print-report">
+            <div className="flex items-center justify-between mb-4 print:hidden">
+              <h2 className="font-bold hhcs-text-navy text-lg">Shift Report</h2>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className="hhcs-btn-primary px-4 py-2 rounded-lg text-sm font-semibold"
+                >
+                  Print / Save as PDF
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  className="px-4 py-2 rounded-lg border border-slate-300 text-slate-600 text-sm font-medium"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+
+            <header className="mb-4 border-b border-slate-200 pb-3">
+              <h1 className="text-xl font-bold hhcs-text-navy">Hope Health & Care Services</h1>
+              <p className="text-sm text-slate-500">NDIS Shift Report — {selectedParticipant.name}</p>
+              <p className="text-xs text-slate-400">{FULL_DATE_LABEL(TODAY_STR)}</p>
+            </header>
+
+            <section className="mb-4">
+              <h3 className="font-semibold hhcs-text-navy mb-1">Medication Sign-Off</h3>
+              {todaysMeds.length === 0 && <p className="text-xs text-slate-400">No medication scheduled today.</p>}
+              {todaysMeds.map((m) => (
+                <p key={m.id} className="text-sm text-slate-700">
+                  {m.scheduled_time} — {m.medication_name}: <strong>{m.status}</strong>
+                  {m.recorded_by ? ` (${m.recorded_by})` : ''}
+                </p>
+              ))}
+            </section>
+
+            <section className="mb-4">
+              <h3 className="font-semibold hhcs-text-navy mb-1">Food Diary</h3>
+              {MEAL_TYPES.map((meal) => {
+                const entry = foodToday[meal.key];
+                if (!entry) return null;
+                const text = meal.key === 'fluids' ? `${entry.fluids_ml || 0}ml` : entry.description;
+                if (!text) return null;
+                return (
+                  <p key={meal.key} className="text-sm text-slate-700">
+                    {meal.label}: {text} {entry.recorded_by ? `(${entry.recorded_by})` : ''}
+                  </p>
+                );
+              })}
+            </section>
+
+            <section className="mb-4">
+              <h3 className="font-semibold hhcs-text-navy mb-1">Sleep Log</h3>
+              {sleepToday.length === 0 && <p className="text-xs text-slate-400">No sleep checks logged today.</p>}
+              {sleepToday.map((s) => (
+                <p key={s.id} className="text-sm text-slate-700">
+                  {formatSlot(s.time_slot)} — {s.status}, mood: {s.mood || 'n/a'} {s.recorded_by ? `(${s.recorded_by})` : ''}
+                </p>
+              ))}
+              {sleepNotesToday && (
+                <p className="text-sm text-slate-700 mt-1"><em>Notes: {sleepNotesToday}</em></p>
+              )}
+            </section>
+
+            <section className="mb-4">
+              <h3 className="font-semibold hhcs-text-navy mb-1">Progress Notes</h3>
+              {progressNotes.length === 0 && <p className="text-xs text-slate-400">No progress notes today.</p>}
+              {progressNotes.map((n) => (
+                <p key={n.id} className="text-sm text-slate-700">
+                  [{n.category}] {n.note} — {n.recorded_by}
+                </p>
+              ))}
+            </section>
+
+            <section className="mb-4">
+              <h3 className="font-semibold hhcs-text-navy mb-1">Incident Reports</h3>
+              {incidents.length === 0 && <p className="text-xs text-slate-400">No incidents today.</p>}
+              {incidents.map((inc) => (
+                <p key={inc.id} className="text-sm text-slate-700">
+                  [{inc.severity}/{inc.type}] {inc.description} — {inc.recorded_by}
+                </p>
+              ))}
+            </section>
+
+            <section>
+              <h3 className="font-semibold hhcs-text-navy mb-1">Gallery</h3>
+              {photos.length === 0 && <p className="text-xs text-slate-400">No photos on file.</p>}
+              <div className="grid grid-cols-3 gap-2">
+                {photos.map((p) => (
+                  <div key={p.id}>
+                    <img src={p.url} alt="" className="w-full h-20 object-cover rounded" />
+                    <p className="text-[10px] text-slate-400 truncate">{p.uploaded_by}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
 /* ============================================================
    APP
    Layout note: the same components now render at any width — on
@@ -1892,6 +2436,13 @@ function TabNav({ active, onChange }) {
    laptop screen upward the whole panel simply gets wider (and
    padding grows) so nothing looks stretched-thin on a monitor.
    No data, contexts, or component logic were changed for this.
+
+   Persistence note: all five tabs are now mounted at once and
+   simply shown/hidden with a CSS class instead of being
+   conditionally rendered (which unmounted — and therefore reset
+   — whichever tab wasn't active). Combined with lifting the
+   Medication/Food/Sleep data into contexts above, nothing typed
+   or logged disappears when switching tabs.
    ============================================================ */
 function Dashboard() {
   const [tab, setTab] = useState('medication');
@@ -1908,14 +2459,16 @@ function Dashboard() {
           <StaffAttributionBar />
           <ParticipantSelector />
           <TabNav active={tab} onChange={setTab} />
+          <ShiftReportButton />
         </div>
 
         <div className="mt-4 lg:mt-0 lg:bg-white lg:rounded-xl lg:border lg:border-slate-200 lg:p-6">
-          {tab === 'medication' && <MedicationSignOff />}
-          {tab === 'food' && <FoodDiaryGrid />}
-          {tab === 'sleep' && <SleepLog />}
-          {tab === 'progress' && <ProgressNotes />}
-          {tab === 'incident' && <IncidentReport />}
+          <div className={tab === 'medication' ? '' : 'hidden'}><MedicationSignOff /></div>
+          <div className={tab === 'food' ? '' : 'hidden'}><FoodDiaryGrid /></div>
+          <div className={tab === 'sleep' ? '' : 'hidden'}><SleepLog /></div>
+          <div className={tab === 'progress' ? '' : 'hidden'}><ProgressNotes /></div>
+          <div className={tab === 'incident' ? '' : 'hidden'}><IncidentReport /></div>
+          <div className={tab === 'gallery' ? '' : 'hidden'}><GalleryTab /></div>
         </div>
       </div>
     </div>
@@ -1932,8 +2485,14 @@ export default function App() {
   return (
     <ParticipantProvider>
       <StaffProvider>
-        <style>{THEME_CSS}</style>
-        <AppShell />
+        <MedicationDataProvider>
+          <FoodDiaryProvider>
+            <SleepLogDataProvider>
+              <style>{THEME_CSS}</style>
+              <AppShell />
+            </SleepLogDataProvider>
+          </FoodDiaryProvider>
+        </MedicationDataProvider>
       </StaffProvider>
     </ParticipantProvider>
   );
