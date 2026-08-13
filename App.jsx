@@ -77,7 +77,6 @@ export default function ParticipantCareCalendar() {
     alert(`Care log for ${selectedDate} successfully saved!`);
   };
 
-  // Generate a mock multi-day calendar matrix for the month view
   const daysInMonth = Array.from({ length: 31 }, (_, i) => i + 1);
 
   return (
@@ -88,7 +87,7 @@ export default function ParticipantCareCalendar() {
             <CardTitle className="text-2xl font-bold flex items-center gap-2">
               <CalendarIcon className="w-6 h-6 text-blue-400" /> Participant Daily Care Calendar & Log
             </CardTitle>
-            <p className="text-sm text-slate-300 mt-1">Comprehensive daily shift tracker, meal times, sleep, progress, and incident reporting</p>
+            <p className="text-sm text-slate-300 mt-1">Comprehensive daily shift tracker, meal timestamps, sleep logs, progress notes, and incident reporting</p>
           </div>
           <div className="flex items-center gap-2 bg-slate-800 p-2 rounded-md border border-slate-700">
             <Label htmlFor="calendarDate" className="text-xs text-slate-300 font-medium">Log Date:</Label>
@@ -191,7 +190,7 @@ export default function ParticipantCareCalendar() {
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="breakfastTime" className="flex items-center gap-1 font-medium text-xs text-slate-600">
-                      <Clock className="w-3.5 h-3.5 text-blue-600" /> Exact Time Taken
+                      <Clock className="w-3.5 h-3.5 text-blue-600" /> Time Taken (Hour)
                     </Label>
                     <Input 
                       id="breakfastTime" 
@@ -215,7 +214,7 @@ export default function ParticipantCareCalendar() {
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="lunchTime" className="flex items-center gap-1 font-medium text-xs text-slate-600">
-                      <Clock className="w-3.5 h-3.5 text-blue-600" /> Exact Time Taken
+                      <Clock className="w-3.5 h-3.5 text-blue-600" /> Time Taken (Hour)
                     </Label>
                     <Input 
                       id="lunchTime" 
@@ -239,7 +238,7 @@ export default function ParticipantCareCalendar() {
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="dinnerTime" className="flex items-center gap-1 font-medium text-xs text-slate-600">
-                      <Clock className="w-3.5 h-3.5 text-blue-600" /> Exact Time Taken
+                      <Clock className="w-3.5 h-3.5 text-blue-600" /> Time Taken (Hour)
                     </Label>
                     <Input 
                       id="dinnerTime" 
@@ -263,7 +262,7 @@ export default function ParticipantCareCalendar() {
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="fluidsTime" className="flex items-center gap-1 font-medium text-xs text-slate-600">
-                      <Clock className="w-3.5 h-3.5 text-blue-600" /> Exact Time Taken
+                      <Clock className="w-3.5 h-3.5 text-blue-600" /> Time Taken (Hour)
                     </Label>
                     <Input 
                       id="fluidsTime" 
@@ -287,7 +286,7 @@ export default function ParticipantCareCalendar() {
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="snacksTime" className="flex items-center gap-1 font-medium text-xs text-slate-600">
-                      <Clock className="w-3.5 h-3.5 text-blue-600" /> Exact Time Taken
+                      <Clock className="w-3.5 h-3.5 text-blue-600" /> Time Taken (Hour)
                     </Label>
                     <Input 
                       id="snacksTime" 
