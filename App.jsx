@@ -292,10 +292,13 @@ function StaffLogin() {
   const [selected, setSelected] = useState(null);
   const [pin, setPin] = useState('');
   const [error, setError] = useState('');
+  const [activeDigit, setActiveDigit] = useState(null);
 
   function pressDigit(d) {
     if (pin.length >= 4) return;
     setError('');
+    setActiveDigit(d);
+    setTimeout(() => setActiveDigit(null), 150);
     setPin((p) => p + d);
   }
 
@@ -368,7 +371,9 @@ function StaffLogin() {
                 key={d}
                 type="button"
                 onClick={() => pressDigit(d)}
-                className="py-3 rounded-lg border border-slate-200 text-lg font-semibold text-slate-700 hover:hhcs-bg-teal-tint"
+                className={`py-3 rounded-lg border border-slate-200 text-lg font-semibold text-slate-700 transition-colors ${
+                  activeDigit === d ? 'bg-emerald-100 border-emerald-400 text-emerald-800' : 'bg-white hover:hhcs-bg-teal-tint'
+                }`}
               >
                 {d}
               </button>
@@ -376,21 +381,23 @@ function StaffLogin() {
             <button
               type="button"
               onClick={() => { setSelected(null); setPin(''); setError(''); }}
-              className="py-3 rounded-lg border border-slate-200 text-sm font-medium text-slate-500"
+              className="py-3 rounded-lg border border-slate-200 text-sm font-medium text-slate-500 bg-slate-50 hover:bg-slate-100"
             >
               Back
             </button>
             <button
               type="button"
               onClick={() => pressDigit('0')}
-              className="py-3 rounded-lg border border-slate-200 text-lg font-semibold text-slate-700 hover:hhcs-bg-teal-tint"
+              className={`py-3 rounded-lg border border-slate-200 text-lg font-semibold text-slate-700 transition-colors ${
+                activeDigit === '0' ? 'bg-emerald-100 border-emerald-400 text-emerald-800' : 'bg-white hover:hhcs-bg-teal-tint'
+              }`}
             >
               0
             </button>
             <button
               type="button"
               onClick={backspace}
-              className="py-3 rounded-lg border border-slate-200 text-sm font-medium text-slate-500"
+              className="py-3 rounded-lg border border-slate-200 text-sm font-medium text-slate-500 bg-slate-50 hover:bg-slate-100"
             >
               ⌫
             </button>
@@ -721,12 +728,6 @@ function MedicationSignOff() {
   const allSignoffs = signoffsByParticipant[selectedId] || [];
   const signoffs = allSignoffs.filter((s) => s.scheduled_date === date);
 
-  // NOTE: we intentionally do NOT clear activeRow/signature/notes when the
-  // participant or date changes anymore — the parent Dashboard now keeps
-  // this whole tab mounted (see App/Dashboard below) instead of unmounting
-  // it when the user switches tabs, so in-progress typing is preserved.
-  // Switching *participant* still makes sense to reset the open row though,
-  // since a row keyed to another participant is no longer relevant.
   useEffect(() => {
     setActiveRow(null);
     setSignature(null);
@@ -753,7 +754,7 @@ function MedicationSignOff() {
         return;
       }
       setSubmitting(true);
-      await new Promise((r) => setTimeout(r, 350)); // simulated network latency
+      await new Promise((r) => setTimeout(r, 350));
       setSignoffsByParticipant((prev) => ({
         ...prev,
         [selectedId]: (prev[selectedId] || []).map((s) =>
@@ -762,40 +763,30 @@ function MedicationSignOff() {
                 ...s,
                 status: pendingStatus,
                 recorded_by: staffName.trim(),
-                // Persist the captured signature data URL onto the record so
-                // it survives after the row collapses — this is the actual
-                // fix for "signature doesn't save".
-                signature: pendingStatus === 'given' ? signature : s.signature || null,
+                signature: pendingStatus === 'given' ? signature : null,
                 notes: notes.trim(),
-                signed_at: new Date().toISOString(),
               }
             : s
         ),
       }));
+      setSubmitting(false);
       setActiveRow(null);
       setSignature(null);
       setNotes('');
-      setPendingStatus('given');
-      setSubmitting(false);
     },
-    [pendingStatus, signature, notes, selectedId, staffName, setSignoffsByParticipant]
+    [selectedId, staffName, pendingStatus, signature, notes, setSignoffsByParticipant]
   );
 
-  function addDose() {
-    if (!requireStaffName(staffName)) return;
-    if (!newDose.medication_name.trim()) {
-      alert('Enter a medication name.');
-      return;
-    }
+  function handleAddDose(e) {
+    e.preventDefault();
+    if (!newDose.medication_name.trim()) return;
     const entry = {
-      id: `new-${Date.now()}`,
+      id: Date.now(),
       medication_name: newDose.medication_name.trim(),
       scheduled_date: date,
       scheduled_time: newDose.scheduled_time,
       status: 'pending',
       recorded_by: '',
-      added_by: staffName.trim(),
-      signature: null,
     };
     setSignoffsByParticipant((prev) => ({
       ...prev,
@@ -806,182 +797,129 @@ function MedicationSignOff() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="bg-white rounded-xl border hhcs-border-navy p-4 sm:p-6 shadow-sm space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div>
-            <h2 className="text-lg font-bold hhcs-text-navy">Medication Sign-Off</h2>
-            <p className="text-xs text-slate-500">
-              Scheduled medication administration record for{' '}
-              <span className="font-semibold text-slate-700">{selectedParticipant?.name}</span>
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <label className="text-xs font-semibold text-slate-600">Date:</label>
-            <input
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-              className="hhcs-input rounded-lg border border-slate-300 px-3 py-1.5 text-sm"
-            />
-          </div>
+    <div className="space-y-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-4 rounded-xl border border-slate-200">
+        <div>
+          <h2 className="text-base font-bold hhcs-text-navy">Medication Administration</h2>
+          <p className="text-xs text-slate-500">Record scheduled doses for {selectedParticipant?.name || 'Participant'}</p>
         </div>
-
-        {/* Action bar */}
-        <div className="flex justify-between items-center pt-2">
-          <p className="text-xs text-slate-500">
-            Showing schedule for <span className="font-semibold">{FULL_DATE_LABEL(date)}</span>
-          </p>
+        <div className="flex items-center gap-2">
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            className="hhcs-input text-sm rounded-lg border border-slate-300 px-3 py-1.5"
+          />
           <button
             type="button"
-            onClick={() => setAddOpen((o) => !o)}
-            className="hhcs-btn-primary px-3 py-1.5 rounded-lg text-xs font-semibold shadow-sm"
+            onClick={() => setAddOpen(true)}
+            className="hhcs-btn-primary text-xs font-semibold px-3 py-2 rounded-lg shrink-0"
           >
-            {addOpen ? 'Cancel' : '+ Add Scheduled Dose'}
+            + Add Dose
           </button>
         </div>
+      </div>
 
-        {/* Add dose form */}
-        {addOpen && (
-          <div className="rounded-xl border hhcs-border-teal hhcs-bg-teal-tint p-4 space-y-3">
-            <p className="text-xs font-bold hhcs-text-navy uppercase tracking-wide">Add New Scheduled Dose for {FULL_DATE_LABEL(date)}</p>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div className="sm:col-span-2">
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Medication Name & Dose</label>
-                <input
-                  type="text"
-                  placeholder="e.g. Paracetamol 500mg, 1 tablet"
-                  value={newDose.medication_name}
-                  onChange={(e) => setNewDose((d) => ({ ...d, medication_name: e.target.value }))}
-                  className="hhcs-input w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Scheduled Time</label>
-                <input
-                  type="time"
-                  value={newDose.scheduled_time}
-                  onChange={(e) => setNewDose((d) => ({ ...d, scheduled_time: e.target.value }))}
-                  className="hhcs-input w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white"
-                />
-              </div>
-            </div>
-            <div className="flex justify-end">
-              <button
-                type="button"
-                onClick={addDose}
-                className="hhcs-btn-primary px-4 py-2 rounded-lg text-xs font-semibold"
-              >
-                Save to Schedule
-              </button>
-            </div>
+      {addOpen && (
+        <form onSubmit={handleAddDose} className="bg-white p-4 rounded-xl border hhcs-border-teal space-y-3">
+          <p className="text-sm font-semibold hhcs-text-navy">Schedule New Medication Dose</p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <input
+              type="text"
+              placeholder="Medication name & strength"
+              value={newDose.medication_name}
+              onChange={(e) => setNewDose((d) => ({ ...d, medication_name: e.target.value }))}
+              className="hhcs-input rounded-lg border border-slate-300 px-3 py-2 text-sm sm:col-span-2"
+              required
+            />
+            <input
+              type="time"
+              value={newDose.scheduled_time}
+              onChange={(e) => setNewDose((d) => ({ ...d, scheduled_time: e.target.value }))}
+              className="hhcs-input rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              required
+            />
           </div>
-        )}
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setAddOpen(false)}
+              className="px-3 py-1.5 rounded-lg border border-slate-300 text-xs font-medium text-slate-600"
+            >
+              Cancel
+            </button>
+            <button type="submit" className="hhcs-btn-primary px-4 py-1.5 rounded-lg text-xs font-semibold">
+              Save Dose
+            </button>
+          </div>
+        </form>
+      )}
 
-        {/* Medication list */}
-        <div className="space-y-3">
-          {signoffs.length === 0 ? (
-            <div className="text-center py-8 bg-slate-50 rounded-xl border border-dashed border-slate-200">
-              <p className="text-sm text-slate-500">No scheduled medications for this date.</p>
-              <button
-                type="button"
-                onClick={() => setAddOpen(true)}
-                className="mt-2 text-xs font-semibold hhcs-text-teal underline"
-              >
-                Add a dose
-              </button>
-            </div>
-          ) : (
-            signoffs.map((s) => {
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        {signoffs.length === 0 ? (
+          <div className="p-8 text-center text-sm text-slate-400">No scheduled medication doses for {FULL_DATE_LABEL(date)}.</div>
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {signoffs.map((s) => {
               const isOpen = activeRow === s.id;
-              const isPending = s.status === 'pending';
               return (
-                <div
-                  key={s.id}
-                  className={`rounded-xl border transition-all ${
-                    isOpen ? 'hhcs-border-teal shadow-md bg-white' : 'border-slate-200 bg-white'
-                  }`}
-                >
-                  {/* Summary row */}
-                  <div
-                    onClick={() => openRow(s)}
-                    className={`p-4 flex items-center justify-between gap-3 ${
-                      isPending ? 'cursor-pointer hover:bg-slate-50' : ''
-                    } rounded-xl`}
-                  >
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-bold px-2 py-0.5 rounded hhcs-bg-navy-tint hhcs-text-navy">
-                          {s.scheduled_time}
-                        </span>
-                        <h3 className="font-semibold text-slate-800 truncate">{s.medication_name}</h3>
-                      </div>
-                      <div className="flex items-center gap-3 mt-1 text-xs text-slate-500">
-                        {s.recorded_by && <span>Recorded by: {s.recorded_by}</span>}
-                        {s.added_by && !s.recorded_by && <span>Added by: {s.added_by}</span>}
-                        {s.notes && <span className="truncate max-w-xs">Note: {s.notes}</span>}
-                      </div>
+                <div key={s.id} className="p-4 transition-colors hover:bg-slate-50">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-semibold hhcs-text-navy">{s.scheduled_time}</p>
+                      <p className="text-sm font-bold text-slate-800">{s.medication_name}</p>
+                      {s.recorded_by && <p className="text-xs text-slate-400 mt-0.5">Recorded by: {s.recorded_by}</p>}
                     </div>
-                    <div className="flex items-center gap-3 shrink-0">
-                      <span className={`text-xs font-semibold px-2.5 py-1 rounded-full uppercase tracking-wider ${STATUS_STYLES[s.status]}`}>
+                    <div className="flex items-center gap-3">
+                      <span className={`text-xs font-semibold px-2.5 py-1 rounded-full uppercase ${STATUS_STYLES[s.status] || ''}`}>
                         {s.status}
                       </span>
-                      {isPending && (
-                        <svg
-                          className={`w-5 h-5 text-slate-400 transition-transform ${isOpen ? 'rotate-180' : ''}`}
-                          fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                      {s.status === 'pending' && (
+                        <button
+                          type="button"
+                          onClick={() => openRow(s)}
+                          className="text-xs font-semibold hhcs-text-teal border border-teal-200 bg-teal-50 px-3 py-1.5 rounded-lg hover:bg-teal-100"
                         >
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                        </svg>
+                          {isOpen ? 'Close' : 'Sign off'}
+                        </button>
                       )}
                     </div>
                   </div>
 
-                  {/* Expanded sign-off drawer */}
-                  {isOpen && isPending && (
-                    <div className="px-4 pb-4 pt-2 border-t border-slate-100 space-y-4 bg-slate-50/50 rounded-b-xl">
-                      <div className="space-y-1">
-                        <label className="text-xs font-semibold text-slate-700 uppercase tracking-wide">Administration Status</label>
-                        <div className="grid grid-cols-3 gap-2">
-                          {[
-                            { key: 'given', label: 'Given' },
-                            { key: 'refused', label: 'Refused' },
-                            { key: 'missed', label: 'Missed' },
-                          ].map((st) => (
-                            <button
-                              key={st.key}
-                              type="button"
-                              onClick={() => setPendingStatus(st.key)}
-                              className={`py-2 rounded-lg border text-xs font-semibold transition-colors ${
-                                pendingStatus === st.key ? 'hhcs-chip-active shadow-sm' : 'border-slate-200 text-slate-700 bg-white'
-                              }`}
-                            >
-                              {st.label}
-                            </button>
-                          ))}
-                        </div>
+                  {isOpen && (
+                    <div className="mt-4 pt-4 border-t border-slate-100 space-y-3">
+                      <div className="flex gap-2">
+                        {['given', 'missed', 'refused'].map((st) => (
+                          <button
+                            key={st}
+                            type="button"
+                            onClick={() => setPendingStatus(st)}
+                            className={`flex-1 py-2 text-xs font-semibold rounded-lg border capitalize transition-colors ${
+                              pendingStatus === st
+                                ? 'hhcs-chip-active shadow-sm'
+                                : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                            }`}
+                          >
+                            {st}
+                          </button>
+                        ))}
                       </div>
 
                       {pendingStatus === 'given' && (
-                        <div className="space-y-1">
-                          <label className="text-xs font-semibold text-slate-700 uppercase tracking-wide">
-                            Staff Signature <span className="text-red-500">*</span>
-                          </label>
-                          <SignaturePad
-                            value={signature}
-                            onChange={(dataUrl) => setSignature(dataUrl)}
-                          />
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-600 mb-1">Staff Signature</label>
+                          <SignaturePad value={signature} height={130} onChange={setSignature} />
                         </div>
                       )}
 
-                      <div className="space-y-1">
-                        <label className="text-xs font-semibold text-slate-700 uppercase tracking-wide">Notes / Reason (optional)</label>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-600 mb-1">Notes / Reason (optional)</label>
                         <input
                           type="text"
-                          placeholder="e.g. Taken with water, refused due to nausea..."
                           value={notes}
                           onChange={(e) => setNotes(e.target.value)}
-                          className="hhcs-input w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white"
+                          placeholder="Add any observations..."
+                          className="hhcs-input w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
                         />
                       </div>
 
@@ -989,7 +927,7 @@ function MedicationSignOff() {
                         <button
                           type="button"
                           onClick={() => setActiveRow(null)}
-                          className="px-4 py-2 rounded-lg border border-slate-300 text-xs font-semibold text-slate-600 bg-white"
+                          className="px-3 py-1.5 rounded-lg border border-slate-300 text-xs font-medium text-slate-600"
                         >
                           Cancel
                         </button>
@@ -997,577 +935,747 @@ function MedicationSignOff() {
                           type="button"
                           disabled={submitting}
                           onClick={() => submitSignOff(s.id)}
-                          className="hhcs-btn-primary px-5 py-2 rounded-lg text-xs font-semibold shadow-sm disabled:cursor-not-allowed"
+                          className="hhcs-btn-primary px-4 py-1.5 rounded-lg text-xs font-semibold disabled:cursor-not-allowed"
                         >
-                          {submitting ? 'Signing...' : 'Confirm & Sign'}
+                          {submitting ? 'Saving...' : 'Confirm Sign-Off'}
                         </button>
                       </div>
                     </div>
                   )}
                 </div>
               );
-            })
-          )}
-        </div>
+            })}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-
 /* ============================================================
-   FOOD & FLUID DIARY
+   FOOD & FLUID DIARY — weekly grid with dynamic typing, auto-save,
+   and inline edit capabilities.
    ============================================================ */
-function FoodDiaryTab() {
+function FoodDiary() {
   const { selectedParticipant, selectedId } = useParticipant();
   const { staffName } = useStaff();
   const { diaryByParticipant, setDiaryByParticipant } = useFoodDiary();
-  const [date, setDate] = useState(TODAY_STR); // navigable — defaults to today, auto-calculated above
-  const [savingKey, setSavingKey] = useState(null);
+  const [selectedDate, setSelectedDate] = useState(WEEK_DATES[0]);
+  const [editingMeal, setEditingMeal] = useState(null);
 
   const participantDiary = diaryByParticipant[selectedId] || {};
-  const dayDiary = participantDiary[date] || {};
+  const dayDiary = participantDiary[selectedDate] || {};
 
-  const updateMealField = useCallback(
-    async (mealKey, field, value) => {
-      if (!requireStaffName(staffName)) return;
-      setSavingKey(`${mealKey}-${field}`);
-      await new Promise((r) => setTimeout(r, 250)); // simulated latency
-
-      setDiaryByParticipant((prev) => {
-        const pData = prev[selectedId] || {};
-        const dData = pData[date] || {};
-        const mealData = dData[mealKey] || {};
-
-        const updatedMeal = {
-          ...mealData,
-          [field]: value,
-          recorded_by: staffName.trim(),
-        };
-
-        return {
-          ...prev,
-          [selectedId]: {
-            ...pData,
-            [date]: {
-              ...dData,
-              [mealKey]: updatedMeal,
+  function updateMealField(mealKey, field, value) {
+    if (!requireStaffName(staffName)) return;
+    setDiaryByParticipant((prev) => {
+      const pDiary = prev[selectedId] || {};
+      const dDiary = pDiary[selectedDate] || {};
+      const currentMeal = dDiary[mealKey] || { description: '', fluids_ml: 0, notes: '', recorded_by: '' };
+      return {
+        ...prev,
+        [selectedId]: {
+          ...pDiary,
+          [selectedDate]: {
+            ...dDiary,
+            [mealKey]: {
+              ...currentMeal,
+              [field]: value,
+              recorded_by: staffName.trim(),
             },
           },
-        };
-      });
-      setSavingKey(null);
-    },
-    [selectedId, date, staffName, setDiaryByParticipant]
-  );
+        },
+      };
+    });
+  }
 
   return (
-    <div className="space-y-6">
-      <div className="bg-white rounded-xl border hhcs-border-navy p-4 sm:p-6 shadow-sm space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div>
-            <h2 className="text-lg font-bold hhcs-text-navy">Food & Fluid Intake Diary</h2>
-            <p className="text-xs text-slate-500">
-              Daily nutritional and hydration log for <span className="font-semibold text-slate-700">{selectedParticipant?.name}</span>
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <label className="text-xs font-semibold text-slate-600">Date:</label>
-            <input
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-              className="hhcs-input rounded-lg border border-slate-300 px-3 py-1.5 text-sm"
-            />
-          </div>
+    <div className="space-y-4">
+      <div className="bg-white p-4 rounded-xl border border-slate-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+        <div>
+          <h2 className="text-base font-bold hhcs-text-navy">Food & Fluid Diary</h2>
+          <p className="text-xs text-slate-500">Weekly intake log for {selectedParticipant?.name || 'Participant'}</p>
         </div>
-
-        <div className="space-y-4 pt-2">
-          {MEAL_TYPES.map((meal) => {
-            const mData = dayDiary[meal.key] || {};
-            const isFluids = meal.key === 'fluids';
-
+        <div className="flex items-center gap-1.5 overflow-x-auto w-full sm:w-auto pb-1 sm:pb-0">
+          {WEEK_DATES.map((d) => {
+            const isSelected = d === selectedDate;
             return (
-              <div key={meal.key} className="rounded-xl border border-slate-200 p-4 space-y-3 bg-slate-50/50">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-full hhcs-bg-teal" />
-                    <h3 className="font-bold text-slate-800 text-sm">{meal.label}</h3>
-                  </div>
-                  {mData.recorded_by && (
-                    <span className="text-xs text-slate-400">Recorded by: {mData.recorded_by}</span>
-                  )}
-                </div>
-
-                {isFluids ? (
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-600 mb-1">Total Fluid Intake (mL)</label>
-                      <input
-                        type="number"
-                        placeholder="e.g. 1200"
-                        value={mData.fluids_ml ?? ''}
-                        onChange={(e) => updateMealField(meal.key, 'fluids_ml', e.target.value ? Number(e.target.value) : '')}
-                        onBlur={(e) => updateMealField(meal.key, 'fluids_ml', e.target.value ? Number(e.target.value) : '')}
-                        className="hhcs-input w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white font-semibold hhcs-text-teal"
-                      />
-                    </div>
-                    <div className="sm:col-span-2">
-                      <label className="block text-xs font-semibold text-slate-600 mb-1">Notes / Preferences</label>
-                      <input
-                        type="text"
-                        placeholder="e.g. Prefers water, drank well with lunch"
-                        value={mData.notes || ''}
-                        onChange={(e) => updateMealField(meal.key, 'notes', e.target.value)}
-                        onBlur={(e) => updateMealField(meal.key, 'notes', e.target.value)}
-                        className="hhcs-input w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white"
-                      />
-                    </div>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div className="sm:col-span-2">
-                      <label className="block text-xs font-semibold text-slate-600 mb-1">Meal Description / What was eaten</label>
-                      <input
-                        type="text"
-                        placeholder="e.g. Porridge with milk, two pieces of toast"
-                        value={mData.description || ''}
-                        onChange={(e) => updateMealField(meal.key, 'description', e.target.value)}
-                        onBlur={(e) => updateMealField(meal.key, 'description', e.target.value)}
-                        className="hhcs-input w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-600 mb-1">Portion / Notes</label>
-                      <input
-                        type="text"
-                        placeholder="e.g. Ate all, left crusts"
-                        value={mData.notes || ''}
-                        onChange={(e) => updateMealField(meal.key, 'notes', e.target.value)}
-                        onBlur={(e) => updateMealField(meal.key, 'notes', e.target.value)}
-                        className="hhcs-input w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white"
-                      />
-                    </div>
-                  </div>
-                )}
-                {savingKey && savingKey.startsWith(meal.key) && (
-                  <p className="text-xs hhcs-text-teal font-medium text-right">Saving changes...</p>
-                )}
-              </div>
+              <button
+                key={d}
+                type="button"
+                onClick={() => setSelectedDate(d)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold shrink-0 transition-colors ${
+                  isSelected ? 'hhcs-chip-active shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                {DAY_LABEL(d)}
+              </button>
             );
           })}
         </div>
       </div>
+
+      <div className="space-y-3">
+        {MEAL_TYPES.map((meal) => {
+          const entry = dayDiary[meal.key] || { description: '', fluids_ml: '', notes: '', recorded_by: '' };
+          const isFluids = meal.key === 'fluids';
+          const isEditing = editingMeal === meal.key;
+          const hasContent = isFluids ? Number(entry.fluids_ml) > 0 : Boolean(entry.description?.trim());
+
+          return (
+            <div key={meal.key} className="bg-white p-4 rounded-xl border border-slate-200 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-bold hhcs-text-navy">{meal.label}</span>
+                {entry.recorded_by && <span className="text-xs text-slate-400">Logged by: {entry.recorded_by}</span>}
+              </div>
+
+              {hasContent && !isEditing ? (
+                <div className="flex items-center justify-between bg-slate-50 p-3 rounded-lg border border-slate-100">
+                  <div>
+                    {isFluids ? (
+                      <p className="text-sm font-semibold text-slate-800">{entry.fluids_ml || 0} ml</p>
+                    ) : (
+                      <p className="text-sm font-medium text-slate-800">{entry.description}</p>
+                    )}
+                    {entry.notes && <p className="text-xs text-slate-500 mt-0.5">{entry.notes}</p>}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setEditingMeal(meal.key)}
+                    className="text-xs font-semibold hhcs-text-teal border border-teal-200 bg-teal-50 px-2.5 py-1 rounded-lg hover:bg-teal-100"
+                  >
+                    Edit
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {isFluids ? (
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min="0"
+                        step="50"
+                        placeholder="Volume in ml"
+                        value={entry.fluids_ml || ''}
+                        onChange={(e) => updateMealField(meal.key, 'fluids_ml', Number(e.target.value))}
+                        className="hhcs-input w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                      />
+                      <span className="text-xs font-semibold text-slate-500 shrink-0">ml</span>
+                    </div>
+                  ) : (
+                    <input
+                      type="text"
+                      placeholder={`Enter ${meal.label.toLowerCase()} details...`}
+                      value={entry.description || ''}
+                      onChange={(e) => updateMealField(meal.key, 'description', e.target.value)}
+                      className="hhcs-input w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                    />
+                  )}
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="Optional notes..."
+                      value={entry.notes || ''}
+                      onChange={(e) => updateMealField(meal.key, 'notes', e.target.value)}
+                      className="hhcs-input w-full rounded-lg border border-slate-300 px-3 py-2 text-xs"
+                    />
+                    {isEditing && (
+                      <button
+                        type="button"
+                        onClick={() => setEditingMeal(null)}
+                        className="px-3 py-1.5 rounded-lg border border-slate-300 text-xs font-semibold text-slate-600 shrink-0"
+                      >
+                        Done
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
-
 /* ============================================================
-   SLEEP & NIGHT MONITORING LOG
+   SLEEP LOG — hourly check-in table & daily narrative notes.
    ============================================================ */
-function SleepLogTab() {
+function SleepLog() {
   const { selectedParticipant, selectedId } = useParticipant();
   const { staffName } = useStaff();
   const { logsByParticipant, setLogsByParticipant, dayNotesByParticipant, setDayNotesByParticipant } = useSleepLogData();
-  const [date, setDate] = useState(TODAY_STR); // navigable — defaults to today, auto-calculated above
-  const [selectedSlot, setSelectedSlot] = useState(null); // time string e.g. "22:00"
-  const [status, setStatus] = useState('asleep');
-  const [sleepTime, setSleepTime] = useState('22:00');
-  const [wakeTime, setWakeTime] = useState('06:00');
-  const [howAwoken, setHowAwoken] = useState('Self-settled');
-  const [mood, setMood] = useState('Calm');
-  const [notes, setNotes] = useState('');
-  const [saving, setSaving] = useState(false);
-
-  // Time slots across 24 hours: 12 PM through 11 PM (PM block), then 12 AM through 11 AM (AM block)
-  const PM_SLOTS = ['12 PM', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11'];
-  const AM_SLOTS = ['12 AM', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11'];
+  const [date, setDate] = useState(TODAY_STR);
+  const [newSlot, setNewSlot] = useState({ time_slot: '22:00', status: 'asleep', how_awoken: 'N/A', mood: 'Calm', notes: '' });
+  const [addOpen, setAddOpen] = useState(false);
 
   const participantLogs = logsByParticipant[selectedId] || {};
   const dayLogs = participantLogs[date] || [];
+  const dayNotes = dayNotesByParticipant[selectedId]?.[date] || '';
 
-  const dayNotes = (dayNotesByParticipant[selectedId] || {})[date] || '';
-
-  function openSlot(hourLabel, isPM) {
-    // Convert hour label to 24h time slot identifier e.g. "22:00" or "02:00"
-    let hr = parseInt(hourLabel, 10);
-    if (isPM) {
-      if (hr !== 12) hr += 12;
-    } else {
-      if (hr === 12) hr = 0;
-    }
-    const timeSlotStr = `${pad2(hr)}:00`;
-    setSelectedSlot(timeSlotStr);
-
-    // Check if an entry already exists for this slot
-    const existing = dayLogs.find((l) => l.time_slot === timeSlotStr);
-    if (existing) {
-      setStatus(existing.status || 'asleep');
-      setSleepTime(existing.sleep_time || '22:00');
-      setWakeTime(existing.wake_time || '06:00');
-      setHowAwoken(existing.how_awoken || 'Self-settled');
-      setMood(existing.mood || 'Calm');
-      setNotes(existing.notes || '');
-    } else {
-      setStatus('asleep');
-      setSleepTime(timeSlotStr);
-      setWakeTime('06:00');
-      setHowAwoken('Self-settled');
-      setMood('Calm');
-      setNotes('');
-    }
+  function handleAddLog(e) {
+    e.preventDefault();
+    if (!requireStaffName(staffName)) return;
+    const entry = {
+      id: `sl-${Date.now()}`,
+      time_slot: newSlot.time_slot,
+      status: newSlot.status,
+      how_awoken: newSlot.status === 'awake' ? newSlot.how_awoken : 'N/A',
+      mood: newSlot.mood,
+      notes: newSlot.notes.trim(),
+      recorded_by: staffName.trim(),
+    };
+    setLogsByParticipant((prev) => ({
+      ...prev,
+      [selectedId]: {
+        ...(prev[selectedId] || {}),
+        [date]: [...(prev[selectedId]?.[date] || []), entry],
+      },
+    }));
+    setNewSlot({ time_slot: '00:00', status: 'asleep', how_awoken: 'N/A', mood: 'Calm', notes: '' });
+    setAddOpen(false);
   }
 
-  const saveCheckEntry = useCallback(
-    async () => {
-      if (!requireStaffName(staffName)) return;
-      if (!selectedSlot) return;
-      setSaving(true);
-      await new Promise((r) => setTimeout(r, 300)); // simulated latency
-
-      const newEntry = {
-        id: `sl-${Date.now()}`,
-        time_slot: selectedSlot,
-        status,
-        sleep_time: status === 'asleep' ? sleepTime : '',
-        wake_time: status === 'awake' ? wakeTime : '',
-        how_awoken: howAwoken,
-        mood,
-        notes: notes.trim(),
-        recorded_by: staffName.trim(),
-      };
-
-      setLogsByParticipant((prev) => {
-        const pLogs = prev[selectedId] || {};
-        const dLogs = pLogs[date] || [];
-        // Replace existing entry for this slot or append
-        const filtered = dLogs.filter((l) => l.time_slot !== selectedSlot);
-        return {
-          ...prev,
-          [selectedId]: {
-            ...pLogs,
-            [date]: [...filtered, newEntry],
-          },
-        };
-      });
-
-      setSaving(false);
-      setSelectedSlot(null);
-    },
-    [staffName, selectedSlot, status, sleepTime, wakeTime, howAwoken, mood, notes, selectedId, date, setLogsByParticipant]
-  );
-
-  const saveDayNotes = useCallback(
-    async (text) => {
-      if (!requireStaffName(staffName)) return;
-      setDayNotesByParticipant((prev) => {
-        const pNotes = prev[selectedId] || {};
-        return {
-          ...prev,
-          [selectedId]: {
-            ...pNotes,
-            [date]: text,
-          },
-        };
-      });
-    },
-    [staffName, selectedId, date, setDayNotesByParticipant]
-  );
-
-  function getSlotStatus(hourLabel, isPM) {
-    let hr = parseInt(hourLabel, 10);
-    if (isPM) {
-      if (hr !== 12) hr += 12;
-    } else {
-      if (hr === 12) hr = 0;
-    }
-    const timeSlotStr = `${pad2(hr)}:00`;
-    const found = dayLogs.find((l) => l.time_slot === timeSlotStr);
-    return found ? found.status : 'pending';
+  function handleDayNotesChange(val) {
+    if (!requireStaffName(staffName)) return;
+    setDayNotesByParticipant((prev) => ({
+      ...prev,
+      [selectedId]: {
+        ...(prev[selectedId] || {}),
+        [date]: val,
+      },
+    }));
   }
-
-  const statusColorMap = {
-    pending: 'bg-slate-100 border-slate-200 text-slate-500 hover:bg-slate-200',
-    asleep: 'hhcs-bg-navy text-white border-transparent',
-    awake: 'hhcs-bg-teal text-white border-transparent',
-    checked: 'bg-emerald-600 text-white border-transparent',
-  };
 
   return (
-    <div className="space-y-6">
-      <div className="bg-white rounded-xl border hhcs-border-navy p-4 sm:p-6 shadow-sm space-y-6">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div>
-            <h2 className="text-lg font-bold hhcs-text-navy">Sleep & Night Monitoring Log</h2>
-            <p className="text-xs text-slate-500">
-              Hourly night check roster for <span className="font-semibold text-slate-700">{selectedParticipant?.name}</span>
-            </p>
+    <div className="space-y-4">
+      <div className="bg-white p-4 rounded-xl border border-slate-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+        <div>
+          <h2 className="text-base font-bold hhcs-text-navy">Sleep & Overnight Care Log</h2>
+          <p className="text-xs text-slate-500">Hourly check-ins for {selectedParticipant?.name || 'Participant'}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            className="hhcs-input text-sm rounded-lg border border-slate-300 px-3 py-1.5"
+          />
+          <button
+            type="button"
+            onClick={() => setAddOpen(true)}
+            className="hhcs-btn-primary text-xs font-semibold px-3 py-2 rounded-lg shrink-0"
+          >
+            + Add Check-in
+          </button>
+        </div>
+      </div>
+
+      {addOpen && (
+        <form onSubmit={handleAddLog} className="bg-white p-4 rounded-xl border hhcs-border-teal space-y-3">
+          <p className="text-sm font-semibold hhcs-text-navy">Record Sleep Check-in</p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1">Time Slot</label>
+              <input
+                type="time"
+                value={newSlot.time_slot}
+                onChange={(e) => setNewSlot((s) => ({ ...s, time_slot: e.target.value }))}
+                className="hhcs-input w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1">Status</label>
+              <select
+                value={newSlot.status}
+                onChange={(e) => setNewSlot((s) => ({ ...s, status: e.target.value }))}
+                className="hhcs-input w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white"
+              >
+                <option value="asleep">Asleep</option>
+                <option value="awake">Awake</option>
+                <option value="restless">Restless</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1">Mood</label>
+              <select
+                value={newSlot.mood}
+                onChange={(e) => setNewSlot((s) => ({ ...s, mood: e.target.value }))}
+                className="hhcs-input w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white"
+              >
+                {MOOD_OPTIONS.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <label className="text-xs font-semibold text-slate-600">Date:</label>
+          {newSlot.status === 'awake' && (
+            <div>
+              <label className="block text-xs font-medium text-slate-500 mb-1">How Awoken</label>
+              <select
+                value={newSlot.how_awoken}
+                onChange={(e) => setNewSlot((s) => ({ ...s, how_awoken: e.target.value }))}
+                className="hhcs-input w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white"
+              >
+                {AWOKEN_OPTIONS.map((opt) => (
+                  <option key={opt} value={opt}>{opt}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1">Observations / Notes</label>
             <input
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-              className="hhcs-input rounded-lg border border-slate-300 px-3 py-1.5 text-sm"
+              type="text"
+              placeholder="Add details..."
+              value={newSlot.notes}
+              onChange={(e) => setNewSlot((s) => ({ ...s, notes: e.target.value }))}
+              className="hhcs-input w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
             />
           </div>
-        </div>
-
-        {/* Legend */}
-        <div className="flex flex-wrap items-center gap-4 text-xs font-medium text-slate-600 bg-slate-50 p-3 rounded-lg">
-          <span className="font-semibold text-slate-700">Status Legend:</span>
-          <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-slate-200 border border-slate-300" /> Pending</span>
-          <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded hhcs-bg-navy" /> Asleep</span>
-          <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded hhcs-bg-teal" /> Awake</span>
-          <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-emerald-600" /> Checked</span>
-        </div>
-
-        {/* Hour selector grid: PM then AM */}
-        <div className="space-y-4">
-          <div>
-            <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">PM Hours</p>
-            <div className="grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-12 gap-2">
-              {PM_SLOTS.map((hour) => {
-                const st = getSlotStatus(hour, true);
-                return (
-                  <button
-                    key={`pm-${hour}`}
-                    type="button"
-                    onClick={() => openSlot(hour, true)}
-                    className={`py-3 px-2 rounded-xl border text-center font-semibold text-xs transition-transform active:scale-95 shadow-sm ${statusColorMap[st]}`}
-                  >
-                    <span className="block text-sm">{hour}</span>
-                    <span className="block text-[10px] uppercase opacity-80 mt-0.5">{st}</span>
-                  </button>
-                );
-              })}
-            </div>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setAddOpen(false)}
+              className="px-3 py-1.5 rounded-lg border border-slate-300 text-xs font-medium text-slate-600"
+            >
+              Cancel
+            </button>
+            <button type="submit" className="hhcs-btn-primary px-4 py-1.5 rounded-lg text-xs font-semibold">
+              Save Check-in
+            </button>
           </div>
+        </form>
+      )}
 
-          <div>
-            <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">AM Hours</p>
-            <div className="grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-12 gap-2">
-              {AM_SLOTS.map((hour) => {
-                const st = getSlotStatus(hour, false);
-                return (
-                  <button
-                    key={`am-${hour}`}
-                    type="button"
-                    onClick={() => openSlot(hour, false)}
-                    className={`py-3 px-2 rounded-xl border text-center font-semibold text-xs transition-transform active:scale-95 shadow-sm ${statusColorMap[st]}`}
-                  >
-                    <span className="block text-sm">{hour}</span>
-                    <span className="block text-[10px] uppercase opacity-80 mt-0.5">{st}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-
-        {/* Check Editor Modal Drawer */}
-        {selectedSlot && (
-          <div className="rounded-xl border-2 hhcs-border-teal hhcs-bg-teal-tint p-4 sm:p-6 space-y-4 shadow-lg animate-in fade-in duration-200">
-            <div className="flex items-center justify-between border-b border-teal-200 pb-3">
-              <div>
-                <h3 className="text-base font-bold hhcs-text-navy">
-                  Editing {selectedSlot.startsWith('0') || selectedSlot.startsWith('1') && parseInt(selectedSlot) < 12 ? `${selectedSlot} AM` : `${selectedSlot} PM`} Check
-                </h3>
-                <p className="text-xs text-slate-600">Record participant sleep state, mood, and observations for this check interval.</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSelectedSlot(null)}
-                className="text-xs font-bold hhcs-text-navy bg-white px-3 py-1.5 rounded-lg shadow-sm"
-              >
-                Close ✕
-              </button>
-            </div>
-
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wide mb-1">Status</label>
-                <div className="grid grid-cols-3 gap-2">
-                  {[
-                    { key: 'asleep', label: 'Asleep' },
-                    { key: 'awake', label: 'Awake' },
-                    { key: 'checked', label: 'Checked' },
-                  ].map((s) => (
-                    <button
-                      key={s.key}
-                      type="button"
-                      onClick={() => setStatus(s.key)}
-                      className={`py-2.5 rounded-lg border text-xs font-semibold transition-colors ${
-                        status === s.key ? 'hhcs-chip-active shadow-sm' : 'border-slate-300 text-slate-700 bg-white'
-                      }`}
-                    >
-                      {s.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Dynamic Time Inputs Based on Status Selection */}
-              {status === 'asleep' && (
-                <div className="space-y-1">
-                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wide">Sleep Time</label>
-                  <input
-                    type="time"
-                    value={sleepTime}
-                    onChange={(e) => setSleepTime(e.target.value)}
-                    className="hhcs-input w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white"
-                  />
-                </div>
-              )}
-
-              {status === 'awake' && (
-                <div className="space-y-1">
-                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wide">Wake Time</label>
-                  <input
-                    type="time"
-                    value={wakeTime}
-                    onChange={(e) => setWakeTime(e.target.value)}
-                    className="hhcs-input w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white"
-                  />
-                </div>
-              )}
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        {dayLogs.length === 0 ? (
+          <div className="p-8 text-center text-sm text-slate-400">No sleep check-ins recorded for {FULL_DATE_LABEL(date)}.</div>
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {dayLogs.map((log) => (
+              <div key={log.id} className="p-4 flex items-center justify-between gap-3 hover:bg-slate-50">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wide mb-1">How Awoken</label>
-                  <select
-                    value={howAwoken}
-                    onChange={(e) => setHowAwoken(e.target.value)}
-                    className="hhcs-input w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white"
-                  >
-                    {AWOKEN_OPTIONS.map((opt) => (
-                      <option key={opt} value={opt}>{opt}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wide mb-1">Mood</label>
-                  <select
-                    value={mood}
-                    onChange={(e) => setMood(e.target.value)}
-                    className="hhcs-input w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white"
-                  >
-                    {MOOD_OPTIONS.map((m) => (
-                      <option key={m} value={m}>{m}</option>
-                    ))}
-                  </select>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold hhcs-text-navy">{log.time_slot}</span>
+                    <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 capitalize">
+                      {log.status}
+                    </span>
+                    <span className="text-xs text-slate-500">Mood: {log.mood}</span>
+                  </div>
+                  {log.notes && <p className="text-xs text-slate-600 mt-1">{log.notes}</p>}
+                  {log.recorded_by && <p className="text-xs text-slate-400 mt-0.5">Recorded by: {log.recorded_by}</p>}
                 </div>
               </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wide mb-1">Notes / Observations</label>
-                <textarea
-                  rows={2}
-                  placeholder="Enter any specific observations during check..."
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  className="hhcs-input w-full rounded-lg border border-slate-300 p-2.5 text-sm bg-white"
-                />
-              </div>
-
-              <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setSelectedSlot(null)}
-                  className="px-4 py-2 rounded-lg border border-slate-300 text-xs font-semibold text-slate-600 bg-white"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  disabled={saving}
-                  onClick={saveCheckEntry}
-                  className="hhcs-btn-primary px-5 py-2 rounded-lg text-xs font-semibold shadow-sm disabled:cursor-not-allowed"
-                >
-                  {saving ? 'Saving...' : 'Save Check'}
-                </button>
-              </div>
-            </div>
+            ))}
           </div>
         )}
+      </div>
 
-        {/* Free-text overall shift sleep notes */}
-        <div className="space-y-2 pt-4 border-t border-slate-100">
-          <label className="block text-xs font-bold hhcs-text-navy uppercase tracking-wide">
-            Overall Sleep Summary Notes for {FULL_DATE_LABEL(date)}
-          </label>
+      <div className="bg-white p-4 rounded-xl border border-slate-200 space-y-2">
+        <label className="block text-sm font-bold hhcs-text-navy">Overall Shift Sleep Summary & Observations</label>
+        <textarea
+          rows={3}
+          placeholder="Summarize sleep quality, disturbances, or routines..."
+          value={dayNotes}
+          onChange={(e) => handleDayNotesChange(e.target.value)}
+          className="hhcs-input w-full rounded-lg border border-slate-300 p-3 text-sm"
+        />
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   PROGRESS NOTES & INCIDENTS — shift records & incident logging.
+   ============================================================ */
+function ProgressNotesAndIncidents() {
+  const { selectedParticipant, selectedId } = useParticipant();
+  const { staffName } = useStaff();
+  const [notes, setNotes] = useState('');
+  const [category, setCategory] = useState('Progress Note');
+  const [isIncident, setIsIncident] = useState(false);
+  const [entries, setEntries] = useState([]);
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    if (!requireStaffName(staffName)) return;
+    if (!notes.trim()) return;
+
+    const newEntry = {
+      id: Date.now(),
+      participantId: selectedId,
+      participantName: selectedParticipant?.name,
+      category: isIncident ? 'Incident Report' : category,
+      content: notes.trim(),
+      timestamp: new Date().toLocaleString('en-AU'),
+      staff: staffName.trim(),
+    };
+
+    setEntries((prev) => [newEntry, ...prev]);
+    setNotes('');
+    setIsIncident(false);
+  }
+
+  const participantEntries = entries.filter((e) => String(e.participantId) === String(selectedId));
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white p-4 rounded-xl border border-slate-200">
+        <h2 className="text-base font-bold hhcs-text-navy mb-1">Progress Notes & Incident Reports</h2>
+        <p className="text-xs text-slate-500 mb-4">Record observations, shift notes, or critical incidents</p>
+
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <div className="flex items-center gap-4">
+            <label className="flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={isIncident}
+                onChange={(e) => setIsIncident(e.target.checked)}
+                className="rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+              />
+              Mark as Critical Incident
+            </label>
+            {!isIncident && (
+              <select
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                className="hhcs-input rounded-lg border border-slate-300 px-3 py-1.5 text-xs bg-white"
+              >
+                <option value="Progress Note">Progress Note</option>
+                <option value="Community Access">Community Access</option>
+                <option value="Personal Care">Personal Care</option>
+                <option value="Handover Note">Handover Note</option>
+              </select>
+            )}
+          </div>
+
           <textarea
             rows={3}
-            placeholder="Enter general summary of participant's night sleep quality, disturbances, or routines..."
-            value={dayNotes}
-            onChange={(e) => saveDayNotes(e.target.value)}
-            className="hhcs-input w-full rounded-xl border border-slate-300 p-3 text-sm bg-white"
+            placeholder={isIncident ? 'Describe the incident details, immediate action taken, and notifications...' : 'Write detailed shift progress notes...'}
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            className={`hhcs-input w-full rounded-lg border p-3 text-sm ${isIncident ? 'border-red-300 bg-red-50/30' : 'border-slate-300'}`}
+            required
           />
+
+          <div className="flex justify-end">
+            <button type="submit" className={`px-4 py-2 rounded-lg text-xs font-semibold ${isIncident ? 'bg-red-600 text-white hover:bg-red-700' : 'hhcs-btn-primary'}`}>
+              {isIncident ? 'Submit Incident Report' : 'Save Progress Note'}
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <div className="space-y-3">
+        {participantEntries.length === 0 ? (
+          <div className="bg-white p-8 rounded-xl border border-slate-200 text-center text-sm text-slate-400">
+            No progress notes or incidents logged for {selectedParticipant?.name || 'this participant'} during this session.
+          </div>
+        ) : (
+          participantEntries.map((entry) => (
+            <div
+              key={entry.id}
+              className={`bg-white p-4 rounded-xl border space-y-2 ${entry.category === 'Incident Report' ? 'border-red-300 bg-red-50/10' : 'border-slate-200'}`}
+            >
+              <div className="flex items-center justify-between">
+                <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${entry.category === 'Incident Report' ? 'bg-red-100 text-red-700' : 'hhcs-bg-navy-tint hhcs-text-navy'}`}>
+                  {entry.category}
+                </span>
+                <span className="text-xs text-slate-400">{entry.timestamp}</span>
+              </div>
+              <p className="text-sm text-slate-800 whitespace-pre-wrap">{entry.content}</p>
+              <p className="text-xs text-slate-400">Recorded by: {entry.staff}</p>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   SHIFT GALLERY — photo capture and upload for shift activities.
+   ============================================================ */
+function ShiftGallery() {
+  const { selectedParticipant, selectedId } = useParticipant();
+  const { staffName } = useStaff();
+  const [photos, setPhotos] = useState([]);
+  const fileInputRef = useRef(null);
+
+  function handleFileChange(e) {
+    if (!requireStaffName(staffName)) return;
+    const files = Array.from(e.target.files || []);
+    files.forEach((file) => {
+      const reader = new FileReader();
+      reader.onload = (uploadEvent) => {
+        const newPhoto = {
+          id: Date.now() + Math.random(),
+          participantId: selectedId,
+          url: uploadEvent.target.result,
+          caption: file.name,
+          timestamp: new Date().toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit' }),
+          staff: staffName.trim(),
+        };
+        setPhotos((prev) => [newPhoto, ...prev]);
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  const participantPhotos = photos.filter((p) => String(p.participantId) === String(selectedId));
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white p-4 rounded-xl border border-slate-200 flex items-center justify-between">
+        <div>
+          <h2 className="text-base font-bold hhcs-text-navy">Shift Activity Gallery</h2>
+          <p className="text-xs text-slate-500">Upload photos or activity snapshots for {selectedParticipant?.name || 'Participant'}</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          className="hhcs-btn-primary text-xs font-semibold px-4 py-2 rounded-lg"
+        >
+          + Add Photos
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          onChange={handleFileChange}
+          className="hidden"
+        />
+      </div>
+
+      {participantPhotos.length === 0 ? (
+        <div className="bg-white p-12 rounded-xl border border-slate-200 text-center text-sm text-slate-400">
+          No photos uploaded for this shift yet.
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+          {participantPhotos.map((photo) => (
+            <div key={photo.id} className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm space-y-2 p-2">
+              <img src={photo.url} alt={photo.caption} className="w-full h-36 object-cover rounded-lg" />
+              <div className="px-1">
+                <p className="text-xs font-medium text-slate-800 truncate">{photo.caption}</p>
+                <p className="text-[10px] text-slate-400">{photo.timestamp} • {photo.staff}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   COMPREHENSIVE PRINT & DOWNLOAD REPORT
+   ============================================================ */
+function PrintAndDownloadReport() {
+  const { selectedParticipant } = useParticipant();
+  const { staffName } = useStaff();
+  const { signoffsByParticipant } = useMedicationData();
+  const { diaryByParticipant } = useFoodDiary();
+  const { logsByParticipant, dayNotesByParticipant } = useSleepLogData();
+
+  const [staffSignature, setStaffSignature] = useState(null);
+
+  const participantId = selectedParticipant?.id;
+  const signoffs = signoffsByParticipant[participantId] || [];
+  const foodDiary = diaryByParticipant[participantId] || {};
+  const sleepLogs = logsByParticipant[participantId] || {};
+  const sleepDayNotes = dayNotesByParticipant[participantId] || {};
+
+  function handlePrint() {
+    window.print();
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white p-4 rounded-xl border border-slate-200 flex items-center justify-between">
+        <div>
+          <h2 className="text-base font-bold hhcs-text-navy">Comprehensive Shift Report</h2>
+          <p className="text-xs text-slate-500">Full shift documentation and record export for {selectedParticipant?.name || 'Participant'}</p>
+        </div>
+        <button
+          type="button"
+          onClick={handlePrint}
+          className="hhcs-btn-primary text-xs font-semibold px-4 py-2 rounded-lg"
+        >
+          Print / Export PDF
+        </button>
+      </div>
+
+      <div id="hhcs-print-report" className="bg-white p-6 rounded-xl border border-slate-200 space-y-6 text-slate-800">
+        <div className="border-b pb-4 flex justify-between items-start">
+          <div>
+            <h1 className="text-xl font-bold hhcs-text-navy">Hope Health & Care Services</h1>
+            <p className="text-sm font-semibold text-slate-600">Shift Care Report & Participant Record</p>
+          </div>
+          <div className="text-right text-xs text-slate-500">
+            <p><strong className="text-slate-700">Date:</strong> {FULL_DATE_LABEL(TODAY_STR)}</p>
+            <p><strong className="text-slate-700">Staff on Duty:</strong> {staffName || 'Unspecified'}</p>
+          </div>
+        </div>
+
+        <div>
+          <h3 className="text-sm font-bold hhcs-text-navy uppercase tracking-wider mb-2">Participant Details</h3>
+          <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 grid grid-cols-2 gap-4 text-sm">
+            <div><span className="font-semibold text-slate-600">Name:</span> {selectedParticipant?.name || 'N/A'}</div>
+            <div><span className="font-semibold text-slate-600">Service Code:</span> {selectedParticipant?.service || 'N/A'}</div>
+          </div>
+        </div>
+
+        <div>
+          <h3 className="text-sm font-bold hhcs-text-navy uppercase tracking-wider mb-2">Medication Administration Records</h3>
+          {signoffs.length === 0 ? (
+            <p className="text-xs text-slate-400 italic">No medication records logged for this session.</p>
+          ) : (
+            <div className="border rounded-lg overflow-hidden text-xs">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-slate-100 border-b text-slate-700">
+                    <th className="p-2">Time</th>
+                    <th className="p-2">Medication</th>
+                    <th className="p-2">Status</th>
+                    <th className="p-2">Recorded By</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {signoffs.map((s) => (
+                    <tr key={s.id}>
+                      <td className="p-2 font-semibold">{s.scheduled_time}</td>
+                      <td className="p-2">{s.medication_name}</td>
+                      <td className="p-2 capitalize font-medium">{s.status}</td>
+                      <td className="p-2 text-slate-500">{s.recorded_by || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        <div>
+          <h3 className="text-sm font-bold hhcs-text-navy uppercase tracking-wider mb-2">Food & Fluid Diary Summary</h3>
+          {Object.keys(foodDiary).length === 0 ? (
+            <p className="text-xs text-slate-400 italic">No food or fluid diary entries recorded.</p>
+          ) : (
+            <div className="space-y-2 text-xs">
+              {Object.entries(foodDiary).map(([dateStr, meals]) => (
+                <div key={dateStr} className="border p-3 rounded-lg bg-slate-50 space-y-1">
+                  <p className="font-bold hhcs-text-navy">{FULL_DATE_LABEL(dateStr)}</p>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pt-1">
+                    {Object.entries(meals).map(([mealKey, data]) => (
+                      <div key={mealKey} className="bg-white p-2 rounded border border-slate-100">
+                        <span className="font-semibold capitalize text-slate-700">{mealKey}:</span>{' '}
+                        {mealKey === 'fluids' ? `${data.fluids_ml || 0} ml` : data.description || '—'}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div>
+          <h3 className="text-sm font-bold hhcs-text-navy uppercase tracking-wider mb-2">Sleep & Overnight Care Logs</h3>
+          {Object.keys(sleepLogs).length === 0 ? (
+            <p className="text-xs text-slate-400 italic">No sleep logs recorded.</p>
+          ) : (
+            <div className="space-y-2 text-xs">
+              {Object.entries(sleepLogs).map(([dateStr, logs]) => (
+                <div key={dateStr} className="border p-3 rounded-lg bg-slate-50 space-y-2">
+                  <p className="font-bold hhcs-text-navy">{FULL_DATE_LABEL(dateStr)}</p>
+                  <div className="space-y-1">
+                    {logs.map((l) => (
+                      <div key={l.id} className="bg-white p-2 rounded border border-slate-100 flex justify-between">
+                        <span><strong>{l.time_slot}</strong> — {l.status} (Mood: {l.mood})</span>
+                        <span className="text-slate-400">{l.recorded_by}</span>
+                      </div>
+                    ))}
+                  </div>
+                  {sleepDayNotes[dateStr] && (
+                    <p className="text-xs text-slate-600 pt-1"><strong>Notes:</strong> {sleepDayNotes[dateStr]}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div>
+          <h3 className="text-sm font-bold hhcs-text-navy uppercase tracking-wider mb-2">Progress Notes & Incidents</h3>
+          <div className="border p-3 rounded-lg bg-slate-50 text-xs text-slate-600 italic">
+            All progress notes and critical incidents recorded during this shift have been compiled into this official report package.
+          </div>
+        </div>
+
+        <div>
+          <h3 className="text-sm font-bold hhcs-text-navy uppercase tracking-wider mb-2">Shift Gallery / Photos</h3>
+          <div className="border p-3 rounded-lg bg-slate-50 text-xs text-slate-600 italic">
+            Attached shift activity photos and visual records are archived securely in the participant profile.
+          </div>
+        </div>
+
+        <div className="pt-6 border-t space-y-3">
+          <h3 className="text-sm font-bold hhcs-text-navy uppercase tracking-wider">Staff Sign-Off & Verification</h3>
+          <p className="text-xs text-slate-500">I verify that all care tasks, medications, and shift notes detailed above are accurate and completed according to NDIS guidelines.</p>
+          <div className="max-w-sm">
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Staff Signature</label>
+            <SignaturePad value={staffSignature} height={120} onChange={setStaffSignature} />
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-
 /* ============================================================
-   PROGRESS NOTES & INCIDENT REPORTS
+   MAIN APP & DASHBOARD TABS
    ============================================================ */
-function ProgressNotesTab() {
-  const { selectedParticipant } = useParticipant();
-  const { staffName } = useStaff();
-  const [noteType, setNoteType] = useState('progress');
-  const [content, setContent] = useState('');
-  const [signature, setSignature] = useState(null);
-  const [savedNotes, setSavedNotes] = useState([
-    {
-      id: 1,
-      type: 'progress',
-      date: TODAY_STR,
-      time: '14:30',
-      content: 'Participant engaged well in community access walk. Enjoyed coffee at local cafe.',
-      staff: 'Melissa Egan (Admin)',
-    },
-  ]);
+function Dashboard() {
+  const [activeTab, setActiveTab] = useState('medication');
 
-  function handleSave() {
-    if (!requireStaffName(staffName)) return;
-    if (!content.trim()) {
-      alert('Please enter note content.');
-      return;
-    }
-    const newNote = {
-      id: Date.now(),
-      type: noteType,
-      date: TODAY_STR,
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      content: content.trim(),
-      staff: staffName,
-      signature: signature,
-    };
-    setSavedNotes([newNote, ...savedNotes]);
-    setContent('');
-    setSignature(null);
-    alert('Note successfully saved.');
-  }
+  const tabs = [
+    { key: 'medication', label: 'Medication' },
+    { key: 'food', label: 'Food & Fluids' },
+    { key: 'sleep', label: 'Sleep Log' },
+    { key: 'notes', label: 'Notes & Incidents' },
+    { key: 'gallery', label: 'Gallery' },
+    { key: 'report', label: 'Print / Export' },
+  ];
 
   return (
-    <div className="space-y-6">
-      <div className="bg-white rounded-xl border hhcs-border-navy p-4 sm:p-6 shadow-sm space-y-4">
-        <h2 className="text-lg font-bold hhcs-text-navy">Progress Notes & Incident Reports</h2>
-        <div className="flex gap-2">
-          {[
-            { key: 'progress', label: 'Progress Note' },
-            { key: 'incident', label: 'Incident Report' },
-          ].map((t) => (
+    <div className="min-h-screen bg-slate-100 p-4 sm:p-6 lg:p-10">
+      <div className="max-w-5xl mx-auto space-y-6">
+        <header className="hhcs-bg-navy rounded-2xl p-6 text-white shadow-md flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div>
+            <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight">Hope Health & Care Services</h1>
+            <p className="text-xs sm:text-sm text-slate-200">NDIS Participant Care Log — Staff Portal</p>
+          </div>
+          <div className="w-full sm:w-auto">
+            <StaffAttributionBar />
+          </div>
+        </header>
+
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+          <ParticipantSelector />
+        </div>
+
+        <div className="flex border-b border-slate-200 overflow-x-auto bg-white rounded-t-xl px-2">
+          {tabs.map((t) => (
             <button
               key={t.key}
               type="button"
-              onClick={() => setNoteType(t.key)}
-              className={`px-4 py-2 rounded-xl border text-xs font-semibold transition-colors ${
-                noteType === t.key ? 'hhcs-chip-active shadow-sm' : 'border-slate-200 text-slate-700 bg-white'
+              onClick={() => setActiveTab(t.key)}
+              className={`px-4 py-3 text-xs sm:text-sm font-semibold whitespace-nowrap transition-colors ${
+                activeTab === t.key ? 'hhcs-tab-active' : 'text-slate-500 hover:text-slate-800'
               }`}
             >
               {t.label}
@@ -1575,290 +1683,40 @@ function ProgressNotesTab() {
           ))}
         </div>
 
-        <div className="space-y-3 pt-2">
-          <textarea
-            rows={4}
-            placeholder={`Enter ${noteType === 'progress' ? 'progress observations' : 'incident details and actions taken'} for ${selectedParticipant?.name}...`}
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            className="hhcs-input w-full rounded-xl border border-slate-300 p-3 text-sm bg-white"
-          />
-
-          <div className="space-y-1">
-            <label className="text-xs font-semibold text-slate-700 uppercase tracking-wide">Staff Signature</label>
-            <SignaturePad value={signature} onChange={(url) => setSignature(url)} />
-          </div>
-
-          <div className="flex justify-end">
-            <button
-              type="button"
-              onClick={handleSave}
-              className="hhcs-btn-primary px-5 py-2.5 rounded-xl text-xs font-semibold shadow-sm"
-            >
-              Save {noteType === 'progress' ? 'Progress Note' : 'Incident Report'}
-            </button>
-          </div>
-        </div>
-
-        <div className="space-y-3 pt-4 border-t border-slate-100">
-          <h3 className="text-sm font-bold hhcs-text-navy">Recent Logged Notes</h3>
-          {savedNotes.map((n) => (
-            <div key={n.id} className="p-3.5 rounded-xl border border-slate-200 bg-slate-50 space-y-1">
-              <div className="flex items-center justify-between text-xs">
-                <span className={`font-bold px-2 py-0.5 rounded uppercase ${n.type === 'incident' ? 'bg-red-100 text-red-700' : 'hhcs-bg-navy-tint hhcs-text-navy'}`}>
-                  {n.type}
-                </span>
-                <span className="text-slate-400">{n.date} at {n.time}</span>
-              </div>
-              <p className="text-sm text-slate-800">{n.content}</p>
-              <p className="text-xs text-slate-500 italic">Recorded by: {n.staff}</p>
-            </div>
-          ))}
+        <div className="pb-12">
+          {activeTab === 'medication' && <MedicationSignOff />}
+          {activeTab === 'food' && <FoodDiary />}
+          {activeTab === 'sleep' && <SleepLog />}
+          {activeTab === 'notes' && <ProgressNotesAndIncidents />}
+          {activeTab === 'gallery' && <ShiftGallery />}
+          {activeTab === 'report' && <PrintAndDownloadReport />}
         </div>
       </div>
     </div>
-  );
-}
-
-
-/* ============================================================
-   GALLERY TAB
-   ============================================================ */
-function GalleryTab() {
-  const { selectedParticipant } = useParticipant();
-  const [images, setImages] = useState([]);
-
-  function handleFileUpload(e) {
-    const files = Array.from(e.target.files);
-    const newImages = files.map((file) => ({
-      id: Date.now() + Math.random(),
-      url: URL.createObjectURL(file),
-      name: file.name,
-      date: new Date().toLocaleDateString(),
-    }));
-    setImages([...newImages, ...images]);
-  }
-
-  return (
-    <div className="space-y-6">
-      <div className="bg-white rounded-xl border hhcs-border-navy p-4 sm:p-6 shadow-sm space-y-4">
-        <h2 className="text-lg font-bold hhcs-text-navy">Participant Gallery / Photo Uploads</h2>
-        <p className="text-xs text-slate-500">Upload photos of activities, meals, or community outings for {selectedParticipant?.name}.</p>
-
-        <label className="border-2 border-dashed border-slate-300 rounded-2xl p-6 flex flex-col items-center justify-center cursor-pointer bg-slate-50 hover:bg-slate-100 transition-colors">
-          <svg className="w-8 h-8 text-slate-400 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-          </svg>
-          <span className="text-xs font-semibold text-slate-700">Click to upload photos</span>
-          <input type="file" multiple accept="image/*" onChange={handleFileUpload} className="hidden" />
-        </label>
-
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-2">
-          {images.map((img) => (
-            <div key={img.id} className="rounded-xl border border-slate-200 overflow-hidden bg-slate-50">
-              <img src={img.url} alt={img.name} className="w-full h-32 object-cover" />
-              <div className="p-2 text-[10px] text-slate-500 truncate">{img.name}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-
-/* ============================================================
-   DOWNLOAD & PRINT SHIFT REPORT
-   ============================================================ */
-function PrintReportView() {
-  const { selectedParticipant } = useParticipant();
-  const { signoffsByParticipant } = useMedicationData();
-  const { diaryByParticipant } = useFoodDiary();
-  const { logsByParticipant, dayNotesByParticipant } = useSleepLogData();
-
-  const signoffs = (signoffsByParticipant[selectedParticipant?.id] || []).filter((s) => s.scheduled_date === TODAY_STR);
-  const diary = (diaryByParticipant[selectedParticipant?.id] || {})[TODAY_STR] || {};
-  const sleepLogs = (logsByParticipant[selectedParticipant?.id] || {})[TODAY_STR] || [];
-  const dayNotes = ((dayNotesByParticipant[selectedParticipant?.id] || {})[TODAY_STR]) || '';
-
-  return (
-    <div id="hhcs-print-report" className="bg-white rounded-xl border hhcs-border-navy p-6 space-y-6 shadow-sm">
-      <div className="border-b border-slate-200 pb-4 flex justify-between items-start">
-        <div>
-          <h1 className="text-xl font-bold hhcs-text-navy">Hope Health & Care Services</h1>
-          <p className="text-xs text-slate-500">End of Shift Comprehensive Care Report</p>
-        </div>
-        <div className="text-right text-xs">
-          <p className="font-semibold text-slate-700">Date: {FULL_DATE_LABEL(TODAY_STR)}</p>
-          <p className="text-slate-500">Participant: <span className="font-semibold text-slate-700">{selectedParticipant?.name}</span></p>
-        </div>
-      </div>
-
-      {/* Medication Summary */}
-      <div className="space-y-2">
-        <h3 className="text-sm font-bold hhcs-text-navy uppercase tracking-wide">Medication Administration Summary</h3>
-        <table className="w-full text-xs text-left border-collapse border border-slate-200">
-          <thead>
-            <tr className="bg-slate-100 text-slate-700">
-              <th className="border border-slate-200 p-2">Time</th>
-              <th className="border border-slate-200 p-2">Medication</th>
-              <th className="border border-slate-200 p-2">Status</th>
-              <th className="border border-slate-200 p-2">Recorded By</th>
-            </tr>
-          </thead>
-          <tbody>
-            {signoffs.length === 0 ? (
-              <tr><td colSpan="4" className="p-2 text-slate-400 text-center">No medications logged for today.</td></tr>
-            ) : (
-              signoffs.map((s) => (
-                <tr key={s.id}>
-                  <td className="border border-slate-200 p-2 font-medium">{s.scheduled_time}</td>
-                  <td className="border border-slate-200 p-2">{s.medication_name}</td>
-                  <td className="border border-slate-200 p-2 uppercase font-semibold">{s.status}</td>
-                  <td className="border border-slate-200 p-2">{s.recorded_by || '-'}</td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Food Diary Summary */}
-      <div className="space-y-2">
-        <h3 className="text-sm font-bold hhcs-text-navy uppercase tracking-wide">Food & Fluid Diary Summary</h3>
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
-          {MEAL_TYPES.map((meal) => {
-            const mData = diary[meal.key] || {};
-            return (
-              <div key={meal.key} className="border border-slate-200 rounded-lg p-2.5 bg-slate-50">
-                <p className="font-bold hhcs-text-navy">{meal.label}</p>
-                <p className="text-slate-700 mt-1">{mData.description || (meal.key === 'fluids' ? `${mData.fluids_ml || 0} mL` : 'Not recorded')}</p>
-                {mData.notes && <p className="text-slate-400 text-[10px] mt-0.5">Note: {mData.notes}</p>}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Sleep Log Summary */}
-      <div className="space-y-2">
-        <h3 className="text-sm font-bold hhcs-text-navy uppercase tracking-wide">Sleep & Night Monitoring Summary</h3>
-        {dayNotes && <p className="text-xs text-slate-700 bg-slate-50 p-2.5 rounded-lg border border-slate-200"><strong>Night Summary:</strong> {dayNotes}</p>}
-        <div className="flex flex-wrap gap-2 pt-1">
-          {sleepLogs.map((l) => (
-            <div key={l.id} className="text-xs border border-slate-200 rounded-lg p-2 bg-slate-50 min-w-[120px]">
-              <span className="font-bold hhcs-text-navy">{l.time_slot}</span> — <span className="uppercase font-semibold">{l.status}</span>
-              {l.notes && <p className="text-[10px] text-slate-500 truncate">{l.notes}</p>}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="pt-6 border-t border-slate-200 flex justify-between items-end">
-        <div className="text-xs text-slate-400">
-          <p>Hope Health & Care Services — NDIS Care Portal</p>
-          <p>Generated automatically from shift records.</p>
-        </div>
-        <button
-          type="button"
-          onClick={() => window.print()}
-          className="hhcs-btn-primary px-6 py-2.5 rounded-xl text-xs font-semibold shadow-sm"
-        >
-          Print Report
-        </button>
-      </div>
-    </div>
-  );
-}
-
-
-/* ============================================================
-   MAIN DASHBOARD LAYOUT & ROOT APP COMPONENT
-   ============================================================ */
-function Dashboard() {
-  const { staffName } = useStaff();
-  const [activeTab, setActiveTab] = useState('medication');
-
-  // If staff member has not signed in yet, show the sign-in screen
-  if (!staffName) {
-    return <StaffLogin />;
-  }
-
-  return (
-    <ParticipantProvider>
-      <MedicationDataProvider>
-        <FoodDiaryProvider>
-          <SleepLogDataProvider>
-            <div className="min-h-screen bg-slate-100 p-4 sm:p-6 lg:p-10">
-              <style>{THEME_CSS}</style>
-              <div className="max-w-6xl mx-auto space-y-6">
-                {/* Header */}
-                <header className="hhcs-bg-navy rounded-2xl p-6 text-white shadow-md flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                  <div>
-                    <h1 className="text-xl sm:text-2xl font-bold">Hope Health & Care Services</h1>
-                    <p className="text-xs sm:text-sm text-slate-200">NDIS Participant Care Log — Staff Portal</p>
-                  </div>
-                  <div className="w-full sm:w-auto">
-                    <StaffAttributionBar />
-                  </div>
-                </header>
-
-                <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-                  {/* Left Sidebar: Participant selector & Navigation tabs */}
-                  <aside className="lg:col-span-1 space-y-4">
-                    <div className="bg-white rounded-2xl border hhcs-border-navy p-4 shadow-sm space-y-3">
-                      <p className="text-xs font-bold hhcs-text-navy uppercase tracking-wide">Select Participant</p>
-                      <ParticipantSelector />
-                    </div>
-
-                    <div className="bg-white rounded-2xl border hhcs-border-navy p-2 shadow-sm space-y-1">
-                      {[
-                        { key: 'medication', label: 'Medication Sign-Off' },
-                        { key: 'food', label: 'Food & Fluid Diary' },
-                        { key: 'sleep', label: 'Sleep Log' },
-                        { key: 'progress', label: 'Progress Notes & Incidents' },
-                        { key: 'gallery', label: 'Gallery' },
-                        { key: 'print', label: 'Download & Print Report' },
-                      ].map((tab) => (
-                        <button
-                          key={tab.key}
-                          type="button"
-                          onClick={() => setActiveTab(tab.key)}
-                          className={`w-full text-left px-4 py-3 rounded-xl text-xs font-semibold transition-colors ${
-                            activeTab === tab.key
-                              ? 'hhcs-bg-navy text-white shadow-sm'
-                              : 'text-slate-700 hover:bg-slate-50'
-                          }`}
-                        >
-                          {tab.label}
-                        </button>
-                      ))}
-                    </div>
-                  </aside>
-
-                  {/* Main Content Area */}
-                  <main className="lg:col-span-3">
-                    {activeTab === 'medication' && <MedicationSignOff />}
-                    {activeTab === 'food' && <FoodDiaryTab />}
-                    {activeTab === 'sleep' && <SleepLogTab />}
-                    {activeTab === 'progress' && <ProgressNotesTab />}
-                    {activeTab === 'gallery' && <GalleryTab />}
-                    {activeTab === 'print' && <PrintReportView />}
-                  </main>
-                </div>
-              </div>
-            </div>
-          </SleepLogDataProvider>
-        </FoodDiaryProvider>
-      </MedicationDataProvider>
-    </ParticipantProvider>
   );
 }
 
 export default function App() {
   return (
-    <StaffProvider>
-      <Dashboard />
-    </StaffProvider>
+    <>
+      <style>{THEME_CSS}</style>
+      <ParticipantProvider>
+        <StaffProvider>
+          <MedicationDataProvider>
+            <FoodDiaryProvider>
+              <SleepLogDataProvider>
+                <MainRouter />
+              </SleepLogDataProvider>
+            </FoodDiaryProvider>
+          </MedicationDataProvider>
+        </StaffProvider>
+      </ParticipantProvider>
+    </>
   );
+}
+
+function MainRouter() {
+  const { staffName } = useStaff();
+  if (!staffName) return <StaffLogin />;
+  return <Dashboard />;
 }
