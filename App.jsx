@@ -1306,7 +1306,8 @@ function SleepLog() {
   const { staffName } = useStaff();
   const { logsByParticipant, setLogsByParticipant, dayNotesByParticipant, setDayNotesByParticipant } = useSleepLogData();
   const [date, setDate] = useState(TODAY_STR);
-  const [draft, setDraft] = useState({ sleep_time: '', wake_time: '', how_awoken: AWOKEN_OPTIONS[0], mood: MOOD_OPTIONS[0] });
+  const [draft, setDraft] = useState({ sleep_date: TODAY_STR, sleep_time: '', wake_date: TODAY_STR, wake_time: '', how_awoken: AWOKEN_OPTIONS[0], mood: MOOD_OPTIONS[0] });
+  const [editing, setEditing] = useState(true);
   const [saving, setSaving] = useState(false);
   const [dayNotesDraft, setDayNotesDraft] = useState('');
   const [notesSaved, setNotesSaved] = useState(true);
@@ -1318,16 +1319,21 @@ function SleepLog() {
   const existingRecord = dayLogs[0] || null;
   const savedDayNotes = dayNotesByParticipant[selectedId]?.[date] || '';
 
-  // One sleep record per participant per date now (no more per-hour grid),
-  // so the draft just needs to track the currently selected participant + date.
+  // One sleep record per participant per date. If a record already exists
+  // we open in a clean read-only "view" state (professional summary) with
+  // an Edit button — the same pattern used for Progress Notes elsewhere in
+  // the app — rather than always showing an open form.
   useEffect(() => {
     const rec = logsByParticipant[selectedId]?.[date]?.[0];
     setDraft({
+      sleep_date: rec?.sleep_date || date,
       sleep_time: rec?.sleep_time || '',
+      wake_date: rec?.wake_date || date,
       wake_time: rec?.wake_time || '',
       how_awoken: rec?.how_awoken || AWOKEN_OPTIONS[0],
       mood: rec?.mood || MOOD_OPTIONS[0],
     });
+    setEditing(!rec);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, date]);
 
@@ -1375,6 +1381,10 @@ function SleepLog() {
 
   function saveRecord() {
     if (!requireStaffName(staffName)) return;
+    if (!draft.sleep_time && !draft.wake_time) {
+      alert('Enter a sleep time and/or wake time before saving.');
+      return;
+    }
     setSaving(true);
     setLogsByParticipant((prev) => {
       const participantLogs = { ...(prev[selectedId] || {}) };
@@ -1383,16 +1393,37 @@ function SleepLog() {
         id: existing?.id || `sl-${selectedId}-${date}`,
         status: 'asleep',
         time_slot: draft.sleep_time || existing?.time_slot || '00:00',
+        sleep_date: draft.sleep_date || date,
         sleep_time: draft.sleep_time,
+        wake_date: draft.wake_date || date,
         wake_time: draft.wake_time,
         how_awoken: draft.how_awoken,
         mood: draft.mood,
         recorded_by: staffName.trim(),
+        updated_at: new Date().toISOString(),
       };
       participantLogs[date] = [record];
       return { ...prev, [selectedId]: participantLogs };
     });
     setSaving(false);
+    setEditing(false);
+  }
+
+  function startEditRecord() {
+    setEditing(true);
+  }
+
+  function cancelEditRecord() {
+    if (!existingRecord) return; // nothing to revert to
+    setDraft({
+      sleep_date: existingRecord.sleep_date || date,
+      sleep_time: existingRecord.sleep_time || '',
+      wake_date: existingRecord.wake_date || date,
+      wake_time: existingRecord.wake_time || '',
+      how_awoken: existingRecord.how_awoken || AWOKEN_OPTIONS[0],
+      mood: existingRecord.mood || MOOD_OPTIONS[0],
+    });
+    setEditing(false);
   }
 
   function clearRecord() {
@@ -1401,7 +1432,8 @@ function SleepLog() {
       participantLogs[date] = [];
       return { ...prev, [selectedId]: participantLogs };
     });
-    setDraft({ sleep_time: '', wake_time: '', how_awoken: AWOKEN_OPTIONS[0], mood: MOOD_OPTIONS[0] });
+    setDraft({ sleep_date: date, sleep_time: '', wake_date: date, wake_time: '', how_awoken: AWOKEN_OPTIONS[0], mood: MOOD_OPTIONS[0] });
+    setEditing(true);
   }
 
   async function saveDayNotes() {
@@ -1483,78 +1515,165 @@ function SleepLog() {
       <div className="rounded-xl border hhcs-border-teal hhcs-bg-teal-tint p-4 space-y-3">
         <div className="flex items-center justify-between">
           <p className="text-sm font-semibold text-slate-700">Sleep Record</p>
-          {existingRecord && (
-            <button
-              type="button"
-              onClick={clearRecord}
-              className="text-xs text-red-500 font-medium"
-            >
-              Clear entry
-            </button>
+          {existingRecord && !editing && (
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={startEditRecord}
+                className="text-xs hhcs-text-teal font-medium underline"
+              >
+                Edit
+              </button>
+              <button
+                type="button"
+                onClick={clearRecord}
+                className="text-xs text-red-500 font-medium"
+              >
+                Clear
+              </button>
+            </div>
           )}
         </div>
 
-        {/* Sleep Time / Wake Time — the two fields that actually matter
-            here, each with an explicit AM/PM picker so the worker is
-            never guessing which format the field wants. */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div>
-            <label className="text-xs font-medium text-slate-500">Sleep Time</label>
-            <div className="mt-1">
-              <AmPmTimeInput
-                value={draft.sleep_time}
-                onChange={(v) => setDraft((d) => ({ ...d, sleep_time: v }))}
-              />
+        {!editing && existingRecord ? (
+          /* Saved, read-only summary — clean and professional, with an
+             Edit button so the worker on shift can update it any time. */
+          <div className="rounded-lg bg-white border border-slate-200 divide-y divide-slate-100">
+            <div className="flex items-center justify-between px-4 py-3">
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Sleep Time</span>
+              <span className="text-sm font-semibold text-slate-800">
+                {existingRecord.sleep_time ? formatSlot(existingRecord.sleep_time) : '—'}
+                {existingRecord.sleep_time && (
+                  <span className="text-xs font-normal text-slate-400 ml-2">
+                    {FULL_DATE_LABEL(existingRecord.sleep_date || date)}
+                  </span>
+                )}
+              </span>
+            </div>
+            <div className="flex items-center justify-between px-4 py-3">
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Wake Time</span>
+              <span className="text-sm font-semibold text-slate-800">
+                {existingRecord.wake_time ? formatSlot(existingRecord.wake_time) : '—'}
+                {existingRecord.wake_time && (
+                  <span className="text-xs font-normal text-slate-400 ml-2">
+                    {FULL_DATE_LABEL(existingRecord.wake_date || date)}
+                  </span>
+                )}
+              </span>
+            </div>
+            <div className="flex items-center justify-between px-4 py-3">
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">How Awoken</span>
+              <span className="text-sm text-slate-700">{existingRecord.how_awoken || '—'}</span>
+            </div>
+            <div className="flex items-center justify-between px-4 py-3">
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Mood</span>
+              <span className="text-sm text-slate-700">{existingRecord.mood || '—'}</span>
             </div>
           </div>
-          <div>
-            <label className="text-xs font-medium text-slate-500">Wake Time</label>
-            <div className="mt-1">
-              <AmPmTimeInput
-                value={draft.wake_time}
-                onChange={(v) => setDraft((d) => ({ ...d, wake_time: v }))}
-              />
+        ) : (
+          <>
+            {/* Sleep Date & Time / Wake Date & Time — separate dates matter
+                because a sleep period can cross midnight into the next
+                calendar day. Times use an explicit AM/PM picker so the
+                worker is never guessing which format the field wants. */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <label className="text-xs font-semibold hhcs-text-navy uppercase tracking-wide">Sleep Time</label>
+                <div>
+                  <label className="text-xs font-medium text-slate-500">Date</label>
+                  <input
+                    type="date"
+                    value={draft.sleep_date}
+                    onChange={(e) => setDraft((d) => ({ ...d, sleep_date: e.target.value }))}
+                    className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm mt-1"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-slate-500">Time</label>
+                  <div className="mt-1">
+                    <AmPmTimeInput
+                      value={draft.sleep_time}
+                      onChange={(v) => setDraft((d) => ({ ...d, sleep_time: v }))}
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-semibold hhcs-text-navy uppercase tracking-wide">Wake Time</label>
+                <div>
+                  <label className="text-xs font-medium text-slate-500">Date</label>
+                  <input
+                    type="date"
+                    value={draft.wake_date}
+                    onChange={(e) => setDraft((d) => ({ ...d, wake_date: e.target.value }))}
+                    className="hhcs-input w-full rounded-lg border border-slate-200 px-3 py-2 text-sm mt-1"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-slate-500">Time</label>
+                  <div className="mt-1">
+                    <AmPmTimeInput
+                      value={draft.wake_time}
+                      onChange={(v) => setDraft((d) => ({ ...d, wake_time: v }))}
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
 
-        <div className="grid grid-cols-2 gap-2">
-          <div>
-            <label className="text-xs font-medium text-slate-500">How awoken</label>
-            <select
-              value={draft.how_awoken}
-              onChange={(e) => setDraft((d) => ({ ...d, how_awoken: e.target.value }))}
-              className="hhcs-input w-full rounded-lg border border-slate-200 px-2 py-2 text-sm mt-1"
-            >
-              {AWOKEN_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="text-xs font-medium text-slate-500">Mood</label>
-            <select
-              value={draft.mood}
-              onChange={(e) => setDraft((d) => ({ ...d, mood: e.target.value }))}
-              className="hhcs-input w-full rounded-lg border border-slate-200 px-2 py-2 text-sm mt-1"
-            >
-              {MOOD_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
-            </select>
-          </div>
-        </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-xs font-medium text-slate-500">How awoken</label>
+                <select
+                  value={draft.how_awoken}
+                  onChange={(e) => setDraft((d) => ({ ...d, how_awoken: e.target.value }))}
+                  className="hhcs-input w-full rounded-lg border border-slate-200 px-2 py-2 text-sm mt-1"
+                >
+                  {AWOKEN_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-slate-500">Mood</label>
+                <select
+                  value={draft.mood}
+                  onChange={(e) => setDraft((d) => ({ ...d, mood: e.target.value }))}
+                  className="hhcs-input w-full rounded-lg border border-slate-200 px-2 py-2 text-sm mt-1"
+                >
+                  {MOOD_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+                </select>
+              </div>
+            </div>
 
-        <button
-          type="button"
-          onClick={saveRecord}
-          disabled={saving || !staffName.trim()}
-          className="hhcs-btn-primary w-full font-semibold py-2.5 rounded-lg disabled:cursor-not-allowed"
-        >
-          {saving ? 'Saving...' : 'Save'}
-        </button>
-        {existingRecord?.recorded_by && (
-          <p className="text-xs text-slate-500">Last saved by {existingRecord.recorded_by}</p>
+            <div className="flex gap-2">
+              {existingRecord && (
+                <button
+                  type="button"
+                  onClick={cancelEditRecord}
+                  className="flex-1 py-2.5 rounded-lg border border-slate-300 bg-white text-slate-600 text-sm font-medium"
+                >
+                  Cancel
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={saveRecord}
+                disabled={saving || !staffName.trim()}
+                className="hhcs-btn-primary flex-1 font-semibold py-2.5 rounded-lg disabled:cursor-not-allowed"
+              >
+                {saving ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+            {!staffName.trim() && (
+              <p className="text-xs text-red-600 font-medium">
+                Enter your name or initials at the top of the page to save.
+              </p>
+            )}
+          </>
         )}
-        {!staffName.trim() && (
-          <p className="text-xs text-red-600 font-medium">
-            Enter your name or initials at the top of the page to save.
+
+        {existingRecord?.recorded_by && (
+          <p className="text-xs text-slate-500">
+            {editing ? 'Currently' : 'Last'} saved by {existingRecord.recorded_by}
           </p>
         )}
       </div>
