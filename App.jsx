@@ -1011,7 +1011,7 @@ function FoodDiaryGrid() {
   const { staffName } = useStaff();
   const { diaryByParticipant, setDiaryByParticipant } = useFoodDiary();
   const [activeCell, setActiveCell] = useState(null);
-  const [draft, setDraft] = useState({ description: '', fluids_ml: '', notes: '' });
+  const [draft, setDraft] = useState({ time: '', description: '', fluids_ml: '', notes: '' });
   const [weekOffset, setWeekOffset] = useState(0); // 0 = this week, -1 = last week, +1 = next week...
 
   const weekStartDate = useMemo(() => addDays(CURRENT_WEEK_START, weekOffset * 7), [weekOffset]);
@@ -1024,8 +1024,9 @@ function FoodDiaryGrid() {
   useEffect(() => { setActiveCell(null); }, [selectedId]);
 
   function openCell(date, mealKey) {
-    const existing = participantDiary[date]?.[mealKey] || { description: '', fluids_ml: '', notes: '' };
+    const existing = participantDiary[date]?.[mealKey] || { time: '', description: '', fluids_ml: '', notes: '' };
     setDraft({
+      time: existing.time || '',
       description: existing.description || '',
       fluids_ml: existing.fluids_ml ?? '',
       notes: existing.notes || '',
@@ -1040,6 +1041,7 @@ function FoodDiaryGrid() {
       const participantData = { ...(prev[selectedId] || {}) };
       const dayData = { ...(participantData[date] || {}) };
       dayData[mealKey] = {
+        time: draft.time,
         description: draft.description,
         fluids_ml: mealKey === 'fluids' ? Number(draft.fluids_ml) || 0 : undefined,
         notes: draft.notes,
@@ -1055,7 +1057,7 @@ function FoodDiaryGrid() {
     const entry = participantDiary[date]?.[mealKey];
     if (!entry) return null;
     const text = mealKey === 'fluids' ? (entry.fluids_ml ? `${entry.fluids_ml}ml` : null) : (entry.description || null);
-    return text ? { text, recordedBy: entry.recorded_by } : null;
+    return text ? { text, time: entry.time || null, recordedBy: entry.recorded_by } : null;
   }
 
   if (!selectedParticipant) {
@@ -1135,6 +1137,9 @@ function FoodDiaryGrid() {
                             ${summary ? 'text-slate-700' : 'text-slate-300'}`}
                         >
                           <span className="block truncate">{summary ? summary.text : 'Tap to log'}</span>
+                          {summary?.time && (
+                            <span className="block text-[10px] text-slate-400">{formatSlot(summary.time)}</span>
+                          )}
                           {summary?.recordedBy && (
                             <span className="block text-xs hhcs-text-teal truncate">— {summary.recordedBy}</span>
                           )}
@@ -1154,6 +1159,16 @@ function FoodDiaryGrid() {
           <p className="text-sm font-semibold text-slate-700">
             {MEAL_TYPES.find((m) => m.key === activeCell.mealKey)?.label} · {DAY_LABEL(activeCell.date)}
           </p>
+
+          <div>
+            <label className="text-xs font-medium text-slate-500">Time</label>
+            <div className="mt-1">
+              <AmPmTimeInput
+                value={draft.time}
+                onChange={(v) => setDraft((d) => ({ ...d, time: v }))}
+              />
+            </div>
+          </div>
 
           {activeCell.mealKey === 'fluids' ? (
             <div>
@@ -2536,7 +2551,7 @@ function ShiftReportButton() {
                 if (!text) return null;
                 return (
                   <p key={meal.key} className="text-sm text-slate-700">
-                    {meal.label}: {text} {entry.recorded_by ? `(${entry.recorded_by})` : ''}
+                    {meal.label}{entry.time ? ` (${formatSlot(entry.time)})` : ''}: {text} {entry.recorded_by ? `(${entry.recorded_by})` : ''}
                   </p>
                 );
               })}
