@@ -268,6 +268,34 @@ function requireStaffName(staffName) {
   return true;
 }
 
+/** Update-or-insert helper that doesn't depend on knowing a table's exact
+ *  unique constraint/index name. supabase's .upsert({...}, {onConflict})
+ *  requires onConflict to name a constraint that actually exists in
+ *  Postgres exactly as written, or it throws "there is no unique or
+ *  exclusion constraint matching the ON CONFLICT specification." Instead,
+ *  we try an UPDATE filtered by the natural key columns first; if no row
+ *  matched, we INSERT a new one. This works regardless of what constraints
+ *  are (or aren't) configured on the table, and still guarantees one row
+ *  per natural key instead of accumulating duplicates.
+ *  - table: table name
+ *  - match: { column: value, ... } natural key used to find an existing row
+ *  - payload: the rest of the columns to write */
+async function upsertByMatch(table, match, payload) {
+  let updateQuery = supabase.from(table).update(payload);
+  Object.entries(match).forEach(([col, val]) => {
+    updateQuery = updateQuery.eq(col, val);
+  });
+  const { data: updated, error: updateError } = await updateQuery.select();
+  if (updateError) return { data: null, error: updateError };
+  if (updated && updated.length > 0) return { data: updated[0], error: null };
+  const { data: inserted, error: insertError } = await supabase
+    .from(table)
+    .insert({ ...match, ...payload })
+    .select()
+    .single();
+  return { data: inserted, error: insertError };
+}
+
 /* ============================================================
    STAFF LOGIN — click your name, then enter a 4-digit PIN.
    NOTE: there is no backend staff/PIN table wired up yet, so the
@@ -1013,22 +1041,21 @@ function FoodDiaryGrid() {
     if (!requireStaffName(staffName)) return;
     const { date, mealKey } = activeCell;
     setSaving(true);
-    // Upsert on the natural key (participant_id, date, meal_key) so
-    // re-saving the same meal/day updates the same row instead of
-    // creating duplicates or erroring.
-    const { error } = await supabase.from('food_diary_entries').upsert(
+    // Update-or-insert on the natural key (participant_id, date, meal_key)
+    // so re-saving the same meal/day updates the same row instead of
+    // creating duplicates — done without relying on a named ON CONFLICT
+    // constraint (see upsertByMatch).
+    const { error } = await upsertByMatch(
+      'food_diary_entries',
+      { participant_id: selectedId, date, meal_key: mealKey },
       {
-        participant_id: selectedId,
-        date,
-        meal_key: mealKey,
         time: draft.time || null,
         description: draft.description || null,
         fluids_ml: mealKey === 'fluids' ? Number(draft.fluids_ml) || 0 : null,
         notes: draft.notes || null,
         recorded_by: staffName.trim(),
         updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'participant_id,date,meal_key' }
+      }
     );
     if (error) {
       alert('Could not save entry: ' + error.message);
@@ -1403,12 +1430,14 @@ function SleepLog() {
       return;
     }
     setSaving(true);
-    // Upsert on the natural key (participant_id, date) so re-saving the
-    // same day updates the same row instead of creating duplicates.
-    const { error } = await supabase.from('sleep_logs').upsert(
+    // Update-or-insert on the natural key (participant_id, date) so
+    // re-saving the same day updates the same row instead of creating
+    // duplicates — done without relying on a named ON CONFLICT constraint
+    // (see upsertByMatch).
+    const { error } = await upsertByMatch(
+      'sleep_logs',
+      { participant_id: selectedId, date },
       {
-        participant_id: selectedId,
-        date,
         sleep_date: draft.sleep_date || date,
         sleep_time: draft.sleep_time || null,
         wake_date: draft.wake_date || date,
@@ -1417,8 +1446,7 @@ function SleepLog() {
         mood: draft.mood,
         recorded_by: staffName.trim(),
         updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'participant_id,date' }
+      }
     );
     if (error) {
       alert('Could not save sleep record: ' + error.message);
@@ -1462,22 +1490,19 @@ function SleepLog() {
     if (!requireStaffName(staffName)) return;
     setNotesSaving(true);
     setNotesError('');
-    // Upsert against the existing sleep_notes table structure
-    // (participant_id, date, notes, updated_by, updated_at). onConflict
-    // targets the natural key so a second save on the same day updates
-    // the same row instead of erroring on a duplicate insert.
-    const { error } = await supabase
-      .from('sleep_notes')
-      .upsert(
-        {
-          participant_id: selectedId,
-          date,
-          notes: dayNotesDraft,
-          updated_by: staffName.trim(),
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'participant_id,date' }
-      );
+    // Update-or-insert against the existing sleep_notes table structure
+    // (participant_id, date, notes, updated_by, updated_at) on the
+    // natural key (participant_id, date) — done without relying on a
+    // named ON CONFLICT constraint (see upsertByMatch).
+    const { error } = await upsertByMatch(
+      'sleep_notes',
+      { participant_id: selectedId, date },
+      {
+        notes: dayNotesDraft,
+        updated_by: staffName.trim(),
+        updated_at: new Date().toISOString(),
+      }
+    );
     if (error) {
       setNotesError('Could not save notes: ' + error.message);
     } else {
