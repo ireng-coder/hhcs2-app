@@ -2641,7 +2641,8 @@ function ShiftReportButton() {
                 />
                 <div className="min-w-0">
                   <h1 className="text-2xl font-bold hhcs-text-navy leading-tight">Hope Health & Care Services</h1>
-                  <p className="text-sm text-slate-500">NDIS Participant Care Log — Shift Report</p>
+                  <p className="text-sm text-slate-500">Caring for community</p>
+                  <p className="text-xs text-slate-400 mt-0.5">NDIS Participant Care Log — Shift Report</p>
                 </div>
               </div>
               <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
