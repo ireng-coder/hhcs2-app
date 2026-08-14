@@ -2299,6 +2299,38 @@ function IncidentReport() {
    table. Requires those two objects to exist in your Supabase
    project — see the setup note at the bottom of this file.
    ============================================================ */
+/** Resolves working, viewable URLs for a set of gallery photo rows.
+ *  We stopped trusting the "url" value stored at upload time (a
+ *  getPublicUrl() result only actually loads if the bucket is public —
+ *  if it's private, that URL 404s/403s and the photo shows as a broken
+ *  image, which is exactly what was happening). Signed URLs work for
+ *  both public and private buckets, so we fetch fresh ones whenever the
+ *  gallery is loaded, and fall back to the stored url if signing fails
+ *  for some reason (e.g. the row predates this fix). */
+async function resolveGalleryUrls(rows) {
+  if (!rows || rows.length === 0) return { rows: [], bucketError: '' };
+  const paths = rows.map((r) => r.storage_path).filter(Boolean);
+  let signedByPath = {};
+  let bucketError = '';
+  if (paths.length > 0) {
+    const { data, error } = await supabase.storage
+      .from('gallery-photos')
+      .createSignedUrls(paths, 60 * 60 * 24 * 7); // 7 days
+    if (error) {
+      bucketError = error.message;
+    } else {
+      (data || []).forEach((entry) => {
+        if (entry?.signedUrl && entry?.path) signedByPath[entry.path] = entry.signedUrl;
+      });
+    }
+  }
+  const merged = rows.map((r) => ({
+    ...r,
+    displayUrl: signedByPath[r.storage_path] || r.url || null,
+  }));
+  return { rows: merged, bucketError };
+}
+
 function GalleryTab() {
   const { selectedParticipant, selectedId } = useParticipant();
   const { staffName } = useStaff();
@@ -2316,7 +2348,11 @@ function GalleryTab() {
       .select('*')
       .eq('participant_id', selectedId)
       .order('uploaded_at', { ascending: false });
-    if (!error) setPhotos(data || []);
+    if (!error) {
+      const { rows, bucketError } = await resolveGalleryUrls(data || []);
+      setPhotos(rows);
+      if (bucketError) setUploadError(`Could not load photo previews: ${bucketError}`);
+    }
     setLoadingPhotos(false);
   }, [selectedId]);
 
@@ -2401,7 +2437,20 @@ function GalleryTab() {
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
         {photos.map((p) => (
           <div key={p.id} className="rounded-xl border border-slate-200 bg-white overflow-hidden">
-            <img src={p.url} alt="Uploaded" className="w-full h-32 object-cover" />
+            {p.displayUrl ? (
+              <img
+                src={p.displayUrl}
+                alt="Uploaded"
+                className="w-full h-32 object-cover bg-slate-100"
+                onError={(e) => { e.currentTarget.style.display = 'none'; e.currentTarget.nextSibling.style.display = 'flex'; }}
+              />
+            ) : null}
+            <div
+              className="w-full h-32 items-center justify-center bg-slate-100 text-xs text-slate-400 text-center px-2"
+              style={{ display: p.displayUrl ? 'none' : 'flex' }}
+            >
+              Image unavailable
+            </div>
             <div className="p-2">
               <p className="text-xs font-medium text-slate-700 truncate">{p.uploaded_by}</p>
               <p className="text-[10px] text-slate-400">
@@ -2487,7 +2536,11 @@ function ShiftReportButton() {
     ]);
     setProgressNotes(notesData || []);
     setIncidents(incidentsData || []);
-    setPhotos(photosData || []);
+    // Resolve real, viewable image URLs the same way the Gallery tab
+    // does (signed URLs) instead of trusting the stored "url" column,
+    // which only works if the storage bucket happens to be public.
+    const { rows: resolvedPhotos } = await resolveGalleryUrls(photosData || []);
+    setPhotos(resolvedPhotos);
     setSleepNotesRecord(sleepNotesData || null);
     setLoading(false);
     setOpen(true);
@@ -2653,11 +2706,20 @@ function ShiftReportButton() {
                 Incident Reports
               </h3>
               {incidents.length === 0 && <p className="text-sm text-slate-400">No incidents today.</p>}
-              <div className="space-y-1">
+              <div className="space-y-3">
                 {incidents.map((inc) => (
-                  <p key={inc.id} className="text-sm text-slate-700">
-                    <span className="font-medium">[{inc.severity} / {inc.type}]</span> {inc.description}
-                  </p>
+                  <div key={inc.id} className="text-sm text-slate-700 space-y-0.5">
+                    <p>
+                      <span className="font-semibold">[{inc.severity} / {inc.type}]</span>
+                      {inc.time ? <span className="text-slate-400"> · {inc.time.slice(0, 5)}</span> : ''}
+                      {inc.follow_up_required ? <span className="text-amber-600 font-semibold"> · Follow-up required</span> : ''}
+                    </p>
+                    <p>{inc.description}</p>
+                    {inc.action_taken && <p><span className="font-medium">Action taken:</span> {inc.action_taken}</p>}
+                    {inc.witnesses && <p><span className="font-medium">Witnesses:</span> {inc.witnesses}</p>}
+                    {inc.reported_to && <p><span className="font-medium">Reported to:</span> {inc.reported_to}</p>}
+                    <p className="text-xs text-slate-400">Recorded by {inc.recorded_by}</p>
+                  </div>
                 ))}
               </div>
             </section>
@@ -2670,7 +2732,20 @@ function ShiftReportButton() {
               <div className="grid grid-cols-3 gap-2">
                 {photos.map((p) => (
                   <div key={p.id}>
-                    <img src={p.url} alt="" className="w-full h-20 object-cover rounded border border-slate-200" />
+                    {p.displayUrl ? (
+                      <img
+                        src={p.displayUrl}
+                        alt=""
+                        className="w-full h-20 object-cover rounded border border-slate-200 bg-slate-100"
+                        onError={(e) => { e.currentTarget.style.display = 'none'; e.currentTarget.nextSibling.style.display = 'flex'; }}
+                      />
+                    ) : null}
+                    <div
+                      className="w-full h-20 items-center justify-center rounded border border-slate-200 bg-slate-100 text-[10px] text-slate-400"
+                      style={{ display: p.displayUrl ? 'none' : 'flex' }}
+                    >
+                      Unavailable
+                    </div>
                   </div>
                 ))}
               </div>
