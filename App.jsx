@@ -36,9 +36,15 @@ const THEME_CSS = `
 
   /* Print styles for the shift report — only affects window.print() output */
   @media print {
+    @page { margin: 1.5cm; }
     body * { visibility: hidden; }
     #hhcs-print-report, #hhcs-print-report * { visibility: visible; }
-    #hhcs-print-report { position: absolute; left: 0; top: 0; width: 100%; }
+    #hhcs-print-report {
+      position: absolute; left: 0; top: 0; width: 100%;
+      box-shadow: none !important; border-radius: 0 !important; max-width: none !important;
+    }
+    #hhcs-print-report section { break-inside: avoid; }
+    #hhcs-print-report * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   }
 `;
 
@@ -2462,24 +2468,27 @@ function ShiftReportButton() {
   const { selectedParticipant, selectedId } = useParticipant();
   const { signoffsByParticipant } = useMedicationData();
   const { diaryByParticipant } = useFoodDiary();
-  const { logsByParticipant, dayNotesByParticipant } = useSleepLogData();
+  const { logsByParticipant } = useSleepLogData();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [progressNotes, setProgressNotes] = useState([]);
   const [incidents, setIncidents] = useState([]);
   const [photos, setPhotos] = useState([]);
+  const [sleepNotesRecord, setSleepNotesRecord] = useState(null);
 
   async function generateReport() {
     if (!selectedId) return;
     setLoading(true);
-    const [{ data: notesData }, { data: incidentsData }, { data: photosData }] = await Promise.all([
+    const [{ data: notesData }, { data: incidentsData }, { data: photosData }, { data: sleepNotesData }] = await Promise.all([
       supabase.from('progress_notes').select('*').eq('participant_id', selectedId).eq('date', TODAY_STR),
       supabase.from('incidents').select('*').eq('participant_id', selectedId).eq('date', TODAY_STR),
       supabase.from('gallery_photos').select('*').eq('participant_id', selectedId),
+      supabase.from('sleep_notes').select('*').eq('participant_id', selectedId).eq('date', TODAY_STR).maybeSingle(),
     ]);
     setProgressNotes(notesData || []);
     setIncidents(incidentsData || []);
     setPhotos(photosData || []);
+    setSleepNotesRecord(sleepNotesData || null);
     setLoading(false);
     setOpen(true);
   }
@@ -2489,7 +2498,26 @@ function ShiftReportButton() {
   const todaysMeds = (signoffsByParticipant[selectedId] || []).filter((s) => s.scheduled_date === TODAY_STR);
   const foodToday = diaryByParticipant[selectedId]?.[TODAY_STR] || {};
   const sleepToday = logsByParticipant[selectedId]?.[TODAY_STR] || [];
-  const sleepNotesToday = dayNotesByParticipant[selectedId]?.[TODAY_STR] || '';
+  const sleepRecord = sleepToday[0] || null;
+
+  // One shift is usually worked by one support worker, so repeating their
+  // name after every single line reads as cluttered/unprofessional. We
+  // collect everyone who actually recorded something today (dedup'd) and
+  // print it once, in the header, instead — "Reported by: X" — and drop
+  // the per-line "(Name)" tags below.
+  const reportedBy = Array.from(
+    new Set(
+      [
+        ...todaysMeds.map((m) => m.recorded_by),
+        ...Object.values(foodToday).map((e) => e?.recorded_by),
+        sleepRecord?.recorded_by,
+        sleepNotesRecord?.updated_by,
+        ...progressNotes.map((n) => n.recorded_by),
+        ...incidents.map((i) => i.recorded_by),
+        ...photos.map((p) => p.uploaded_by),
+      ].filter(Boolean)
+    )
+  );
 
   return (
     <>
@@ -2503,9 +2531,9 @@ function ShiftReportButton() {
       </button>
 
       {open && (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center overflow-y-auto p-4">
-          <div className="bg-white rounded-xl max-w-2xl w-full my-8 p-6" id="hhcs-print-report">
-            <div className="flex items-center justify-between mb-4 print:hidden">
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-start justify-center overflow-y-auto p-4">
+          <div className="bg-white rounded-xl max-w-2xl w-full my-8 p-6 sm:p-8 shadow-xl" id="hhcs-print-report">
+            <div className="flex items-center justify-between mb-5 print:hidden">
               <h2 className="font-bold hhcs-text-navy text-lg">Shift Report</h2>
               <div className="flex gap-2">
                 <button
@@ -2525,83 +2553,132 @@ function ShiftReportButton() {
               </div>
             </div>
 
-            <header className="mb-4 border-b border-slate-200 pb-3">
-              <h1 className="text-xl font-bold hhcs-text-navy">Hope Health & Care Services</h1>
-              <p className="text-sm text-slate-500">NDIS Shift Report — {selectedParticipant.name}</p>
-              <p className="text-xs text-slate-400">{FULL_DATE_LABEL(TODAY_STR)}</p>
+            <header className="mb-6 border-b-2 hhcs-border-navy pb-4">
+              <h1 className="text-2xl font-bold hhcs-text-navy">Hope Health & Care Services</h1>
+              <p className="text-sm text-slate-500">NDIS Participant Care Log — Shift Report</p>
+              <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+                <div>
+                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Participant</p>
+                  <p className="font-semibold text-slate-800">{selectedParticipant.name}</p>
+                </div>
+                <div>
+                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Shift Date</p>
+                  <p className="font-semibold text-slate-800">{FULL_DATE_LABEL(TODAY_STR)}</p>
+                </div>
+                <div className="col-span-2">
+                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Reported By</p>
+                  <p className="font-semibold text-slate-800">{reportedBy.length > 0 ? reportedBy.join(', ') : '—'}</p>
+                </div>
+              </div>
             </header>
 
-            <section className="mb-4">
-              <h3 className="font-semibold hhcs-text-navy mb-1">Medication Sign-Off</h3>
-              {todaysMeds.length === 0 && <p className="text-xs text-slate-400">No medication scheduled today.</p>}
-              {todaysMeds.map((m) => (
-                <p key={m.id} className="text-sm text-slate-700">
-                  {m.scheduled_time} — {m.medication_name}: <strong>{m.status}</strong>
-                  {m.recorded_by ? ` (${m.recorded_by})` : ''}
-                </p>
-              ))}
-            </section>
-
-            <section className="mb-4">
-              <h3 className="font-semibold hhcs-text-navy mb-1">Food Diary</h3>
-              {MEAL_TYPES.map((meal) => {
-                const entry = foodToday[meal.key];
-                if (!entry) return null;
-                const text = meal.key === 'fluids' ? `${entry.fluids_ml || 0}ml` : entry.description;
-                if (!text) return null;
-                return (
-                  <p key={meal.key} className="text-sm text-slate-700">
-                    {meal.label}{entry.time ? ` (${formatSlot(entry.time)})` : ''}: {text} {entry.recorded_by ? `(${entry.recorded_by})` : ''}
+            <section className="mb-5">
+              <h3 className="font-semibold hhcs-text-navy uppercase text-xs tracking-wide mb-2 pb-1 border-b border-slate-200">
+                Medication Sign-Off
+              </h3>
+              {todaysMeds.length === 0 && <p className="text-sm text-slate-400">No medication scheduled today.</p>}
+              <div className="space-y-1">
+                {todaysMeds.map((m) => (
+                  <p key={m.id} className="text-sm text-slate-700">
+                    <span className="text-slate-400">{m.scheduled_time}</span> — {m.medication_name}: <strong className="capitalize">{m.status}</strong>
                   </p>
-                );
-              })}
+                ))}
+              </div>
             </section>
 
-            <section className="mb-4">
-              <h3 className="font-semibold hhcs-text-navy mb-1">Sleep Log</h3>
-              {sleepToday.length === 0 && <p className="text-xs text-slate-400">No sleep checks logged today.</p>}
-              {sleepToday.map((s) => (
-                <p key={s.id} className="text-sm text-slate-700">
-                  {formatSlot(s.time_slot)} — {s.status}, mood: {s.mood || 'n/a'} {s.recorded_by ? `(${s.recorded_by})` : ''}
-                </p>
-              ))}
-              {sleepNotesToday && (
-                <p className="text-sm text-slate-700 mt-1"><em>Notes: {sleepNotesToday}</em></p>
+            <section className="mb-5">
+              <h3 className="font-semibold hhcs-text-navy uppercase text-xs tracking-wide mb-2 pb-1 border-b border-slate-200">
+                Food Diary
+              </h3>
+              {Object.keys(foodToday).length === 0 && <p className="text-sm text-slate-400">No food diary entries today.</p>}
+              <div className="space-y-1">
+                {MEAL_TYPES.map((meal) => {
+                  const entry = foodToday[meal.key];
+                  if (!entry) return null;
+                  const text = meal.key === 'fluids' ? `${entry.fluids_ml || 0}ml` : entry.description;
+                  if (!text) return null;
+                  return (
+                    <p key={meal.key} className="text-sm text-slate-700">
+                      <span className="font-medium">{meal.label}</span>
+                      {entry.time ? <span className="text-slate-400"> ({formatSlot(entry.time)})</span> : ''}: {text}
+                      {entry.notes ? <span className="text-slate-500"> — {entry.notes}</span> : ''}
+                    </p>
+                  );
+                })}
+              </div>
+            </section>
+
+            <section className="mb-5">
+              <h3 className="font-semibold hhcs-text-navy uppercase text-xs tracking-wide mb-2 pb-1 border-b border-slate-200">
+                Sleep Log
+              </h3>
+              {!sleepRecord && !sleepNotesRecord?.notes && (
+                <p className="text-sm text-slate-400">No sleep record logged today.</p>
+              )}
+              {sleepRecord && (
+                <div className="text-sm text-slate-700 space-y-0.5">
+                  <p>
+                    <span className="font-medium">Sleep Time:</span>{' '}
+                    {sleepRecord.sleep_time ? `${formatSlot(sleepRecord.sleep_time)} (${FULL_DATE_LABEL(sleepRecord.sleep_date || TODAY_STR)})` : '—'}
+                  </p>
+                  <p>
+                    <span className="font-medium">Wake Time:</span>{' '}
+                    {sleepRecord.wake_time ? `${formatSlot(sleepRecord.wake_time)} (${FULL_DATE_LABEL(sleepRecord.wake_date || TODAY_STR)})` : '—'}
+                  </p>
+                  <p><span className="font-medium">How Awoken:</span> {sleepRecord.how_awoken || '—'}</p>
+                  <p><span className="font-medium">Mood:</span> {sleepRecord.mood || '—'}</p>
+                </div>
+              )}
+              {sleepNotesRecord?.notes && (
+                <p className="text-sm text-slate-700 mt-1"><span className="font-medium">Notes:</span> {sleepNotesRecord.notes}</p>
               )}
             </section>
 
-            <section className="mb-4">
-              <h3 className="font-semibold hhcs-text-navy mb-1">Progress Notes</h3>
-              {progressNotes.length === 0 && <p className="text-xs text-slate-400">No progress notes today.</p>}
-              {progressNotes.map((n) => (
-                <p key={n.id} className="text-sm text-slate-700">
-                  [{n.category}] {n.note} — {n.recorded_by}
-                </p>
-              ))}
+            <section className="mb-5">
+              <h3 className="font-semibold hhcs-text-navy uppercase text-xs tracking-wide mb-2 pb-1 border-b border-slate-200">
+                Progress Notes
+              </h3>
+              {progressNotes.length === 0 && <p className="text-sm text-slate-400">No progress notes today.</p>}
+              <div className="space-y-1">
+                {progressNotes.map((n) => (
+                  <p key={n.id} className="text-sm text-slate-700">
+                    <span className="font-medium">[{n.category}]</span> {n.note}
+                  </p>
+                ))}
+              </div>
             </section>
 
-            <section className="mb-4">
-              <h3 className="font-semibold hhcs-text-navy mb-1">Incident Reports</h3>
-              {incidents.length === 0 && <p className="text-xs text-slate-400">No incidents today.</p>}
-              {incidents.map((inc) => (
-                <p key={inc.id} className="text-sm text-slate-700">
-                  [{inc.severity}/{inc.type}] {inc.description} — {inc.recorded_by}
-                </p>
-              ))}
+            <section className="mb-5">
+              <h3 className="font-semibold hhcs-text-navy uppercase text-xs tracking-wide mb-2 pb-1 border-b border-slate-200">
+                Incident Reports
+              </h3>
+              {incidents.length === 0 && <p className="text-sm text-slate-400">No incidents today.</p>}
+              <div className="space-y-1">
+                {incidents.map((inc) => (
+                  <p key={inc.id} className="text-sm text-slate-700">
+                    <span className="font-medium">[{inc.severity} / {inc.type}]</span> {inc.description}
+                  </p>
+                ))}
+              </div>
             </section>
 
             <section>
-              <h3 className="font-semibold hhcs-text-navy mb-1">Gallery</h3>
-              {photos.length === 0 && <p className="text-xs text-slate-400">No photos on file.</p>}
+              <h3 className="font-semibold hhcs-text-navy uppercase text-xs tracking-wide mb-2 pb-1 border-b border-slate-200">
+                Gallery
+              </h3>
+              {photos.length === 0 && <p className="text-sm text-slate-400">No photos on file.</p>}
               <div className="grid grid-cols-3 gap-2">
                 {photos.map((p) => (
                   <div key={p.id}>
-                    <img src={p.url} alt="" className="w-full h-20 object-cover rounded" />
-                    <p className="text-[10px] text-slate-400 truncate">{p.uploaded_by}</p>
+                    <img src={p.url} alt="" className="w-full h-20 object-cover rounded border border-slate-200" />
                   </div>
                 ))}
               </div>
             </section>
+
+            <footer className="mt-6 pt-3 border-t border-slate-200 text-xs text-slate-400">
+              Generated {new Date().toLocaleString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+            </footer>
           </div>
         </div>
       )}
