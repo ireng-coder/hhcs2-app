@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback, createContext, useContext } from 'react';
+import { createPortal } from 'react-dom';
 import { supabase } from './supabaseClient';
 
 /* ============================================================
@@ -49,6 +50,13 @@ const THEME_CSS = `
     }
     #hhcs-print-report section { break-inside: avoid; }
     #hhcs-print-report * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    /* Chromium has a known bug where position:sticky/fixed elements can
+       bleed through visibility:hidden during print, causing sidebar
+       content to visually overlap the report. Forcing static positioning
+       removes that stacking context so visibility:hidden actually hides
+       it, as intended. The report itself is now rendered via a React
+       portal directly under <body> so it's structurally unaffected. */
+    .hhcs-app-sidebar { position: static !important; display: none !important; }
   }
 `;
 
@@ -155,63 +163,8 @@ const MEAL_TYPES = [
   { key: 'fluids', label: 'Fluids' },
 ];
 
-const WEEK_START = CURRENT_WEEK_START;
-const WEEK_DATES = generateWeekDates(WEEK_START);
-
-// participantId -> date -> mealKey -> { description, fluids_ml, notes, recorded_by }
-const MOCK_FOOD_DIARY = {
-  1: {
-    [WEEK_DATES[0]]: {
-      breakfast: { description: 'Oats with banana', notes: '', recorded_by: 'JM' },
-      lunch: { description: 'Chicken sandwich', notes: 'Ate half, felt full', recorded_by: 'JM' },
-      dinner: { description: '', notes: '', recorded_by: '' },
-      snack: { description: 'Apple slices', notes: '', recorded_by: 'JM' },
-      fluids: { fluids_ml: 900, notes: 'Prefers water over juice', recorded_by: 'JM' },
-    },
-  },
-  4: {
-    [WEEK_DATES[0]]: {
-      breakfast: { description: 'Toast and eggs', notes: '', recorded_by: 'KP' },
-      lunch: { description: '', notes: '', recorded_by: '' },
-      dinner: { description: '', notes: '', recorded_by: '' },
-      snack: { description: '', notes: '', recorded_by: '' },
-      fluids: { fluids_ml: 600, notes: '', recorded_by: 'KP' },
-    },
-  },
-};
-
 const AWOKEN_OPTIONS = ['Self-settled', 'Required assistance', 'Distressed', 'Toileting', 'N/A'];
 const MOOD_OPTIONS = ['Calm', 'Settled', 'Unsettled', 'Distressed', 'Content'];
-
-// participantId -> date -> [{ id, time_slot, status, how_awoken, mood, notes, recorded_by }]
-const MOCK_SLEEP_LOGS = {
-  1: {
-    [TODAY_STR]: [
-      { id: 'sl-1', time_slot: '20:00', status: 'awake', how_awoken: 'N/A', mood: 'Settled', notes: 'Watching TV before bed', recorded_by: 'JM' },
-      { id: 'sl-2', time_slot: '22:00', status: 'asleep', how_awoken: 'N/A', mood: 'Calm', notes: '', recorded_by: 'JM' },
-    ],
-  },
-  4: {
-    [TODAY_STR]: [
-      { id: 'sl-7', time_slot: '20:00', status: 'asleep', how_awoken: 'N/A', mood: 'Calm', notes: '', recorded_by: 'KP' },
-    ],
-  },
-};
-
-// participantId -> date -> free-text shift notes about sleep for that day (separate from per-hour slots)
-const MOCK_SLEEP_DAY_NOTES = {};
-
-// participantId -> [{ id, medication_name, scheduled_date, scheduled_time, status, recorded_by }]
-const MOCK_SIGNOFFS = {
-  1: [
-    { id: 101, medication_name: 'Metformin 500mg', scheduled_date: TODAY_STR, scheduled_time: '08:00', status: 'given', recorded_by: 'JM' },
-    { id: 102, medication_name: 'Metformin 500mg', scheduled_date: TODAY_STR, scheduled_time: '18:00', status: 'pending', recorded_by: '' },
-    { id: 103, medication_name: 'Vitamin D', scheduled_date: TODAY_STR, scheduled_time: '08:00', status: 'pending', recorded_by: '' },
-  ],
-  13: [
-    { id: 104, medication_name: 'Sertraline 50mg', scheduled_date: TODAY_STR, scheduled_time: '09:00', status: 'missed', recorded_by: 'TN' },
-  ],
-};
 
 /* ============================================================
    STAFF ROSTER — for the click-your-name login screen.
@@ -676,62 +629,6 @@ const STATUS_STYLES = {
 };
 
 /* ============================================================
-   SHARED DATA CONTEXTS for Medication / Food Diary / Sleep Log.
-   These used to be plain useState inside each tab component,
-   which meant (a) switching tabs could lose in-progress data
-   depending on how the tab was rendered, and (b) there was no
-   way for the "Download & Print Shift Report" feature to see
-   this data at all. Lifting it up here fixes both at once —
-   the data now lives above the tabs and above the report.
-   ============================================================ */
-const MedicationDataContext = createContext(null);
-function MedicationDataProvider({ children }) {
-  const [signoffsByParticipant, setSignoffsByParticipant] = useState(MOCK_SIGNOFFS);
-  return (
-    <MedicationDataContext.Provider value={{ signoffsByParticipant, setSignoffsByParticipant }}>
-      {children}
-    </MedicationDataContext.Provider>
-  );
-}
-function useMedicationData() {
-  const ctx = useContext(MedicationDataContext);
-  if (!ctx) throw new Error('useMedicationData must be used within a MedicationDataProvider');
-  return ctx;
-}
-
-const FoodDiaryContext = createContext(null);
-function FoodDiaryProvider({ children }) {
-  const [diaryByParticipant, setDiaryByParticipant] = useState(MOCK_FOOD_DIARY);
-  return (
-    <FoodDiaryContext.Provider value={{ diaryByParticipant, setDiaryByParticipant }}>
-      {children}
-    </FoodDiaryContext.Provider>
-  );
-}
-function useFoodDiary() {
-  const ctx = useContext(FoodDiaryContext);
-  if (!ctx) throw new Error('useFoodDiary must be used within a FoodDiaryProvider');
-  return ctx;
-}
-
-const SleepLogContext = createContext(null);
-function SleepLogDataProvider({ children }) {
-  const [logsByParticipant, setLogsByParticipant] = useState(MOCK_SLEEP_LOGS);
-  const [dayNotesByParticipant, setDayNotesByParticipant] = useState(MOCK_SLEEP_DAY_NOTES);
-  return (
-    <SleepLogContext.Provider value={{ logsByParticipant, setLogsByParticipant, dayNotesByParticipant, setDayNotesByParticipant }}>
-      {children}
-    </SleepLogContext.Provider>
-  );
-}
-function useSleepLogData() {
-  const ctx = useContext(SleepLogContext);
-  if (!ctx) throw new Error('useSleepLogData must be used within a SleepLogDataProvider');
-  return ctx;
-}
-
-
-/* ============================================================
    MEDICATION SIGN-OFF — dynamic dose times, staff attribution.
    Signature is now stored on the sign-off record itself (was
    previously captured into local state and then discarded when
@@ -740,30 +637,51 @@ function useSleepLogData() {
 function MedicationSignOff() {
   const { selectedParticipant, selectedId } = useParticipant();
   const { staffName } = useStaff();
-  const { signoffsByParticipant, setSignoffsByParticipant } = useMedicationData();
+  const [signoffs, setSignoffs] = useState([]);
+  const [loadingSignoffs, setLoadingSignoffs] = useState(false);
   const [activeRow, setActiveRow] = useState(null);
   const [signature, setSignature] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [pendingStatus, setPendingStatus] = useState('given');
   const [notes, setNotes] = useState('');
   const [addOpen, setAddOpen] = useState(false);
+  const [addingDose, setAddingDose] = useState(false);
   const [newDose, setNewDose] = useState({ medication_name: '', scheduled_time: '08:00' });
   const [date, setDate] = useState(TODAY_STR); // navigable — defaults to today, auto-calculated above
 
-  const allSignoffs = signoffsByParticipant[selectedId] || [];
-  const signoffs = allSignoffs.filter((s) => s.scheduled_date === date);
+  // Persisted to the "medication_signoffs" table (participant_id,
+  // medication_name, scheduled_date, scheduled_time, status, signature,
+  // notes, recorded_by, added_by, signed_at) — this used to be in-memory
+  // only, which is why everything vanished on refresh. Loads every
+  // scheduled dose for the participant so date-navigation (prev/next day)
+  // doesn't need a fresh fetch each time.
+  const loadSignoffs = useCallback(async () => {
+    if (!selectedId) return;
+    setLoadingSignoffs(true);
+    const { data, error } = await supabase
+      .from('medication_signoffs')
+      .select('*')
+      .eq('participant_id', selectedId)
+      .order('scheduled_date', { ascending: true })
+      .order('scheduled_time', { ascending: true });
+    if (!error) setSignoffs(data || []);
+    setLoadingSignoffs(false);
+  }, [selectedId]);
 
   // NOTE: we intentionally do NOT clear activeRow/signature/notes when the
-  // participant or date changes anymore — the parent Dashboard now keeps
-  // this whole tab mounted (see App/Dashboard below) instead of unmounting
-  // it when the user switches tabs, so in-progress typing is preserved.
-  // Switching *participant* still makes sense to reset the open row though,
-  // since a row keyed to another participant is no longer relevant.
+  // participant changes here beyond resetting them — the parent Dashboard
+  // keeps this whole tab mounted (see App/Dashboard below) instead of
+  // unmounting it when the user switches tabs, so in-progress typing on
+  // the SAME participant is preserved. Switching participant resets the
+  // open row since it's no longer relevant, and refetches from the DB.
   useEffect(() => {
     setActiveRow(null);
     setSignature(null);
     setNotes('');
-  }, [selectedId]);
+    loadSignoffs();
+  }, [selectedId, loadSignoffs]);
+
+  const todaysSignoffs = signoffs.filter((s) => s.scheduled_date === date);
 
   function openRow(s) {
     if (s.status !== 'pending') return;
@@ -785,63 +703,62 @@ function MedicationSignOff() {
         return;
       }
       setSubmitting(true);
-      await new Promise((r) => setTimeout(r, 350)); // simulated network latency
-      setSignoffsByParticipant((prev) => ({
-        ...prev,
-        [selectedId]: (prev[selectedId] || []).map((s) =>
-          s.id === signoffId
-            ? {
-                ...s,
-                status: pendingStatus,
-                recorded_by: staffName.trim(),
-                // Persist the captured signature data URL onto the record so
-                // it survives after the row collapses — this is the actual
-                // fix for "signature doesn't save".
-                signature: pendingStatus === 'given' ? signature : s.signature || null,
-                notes: notes.trim(),
-                signed_at: new Date().toISOString(),
-              }
-            : s
-        ),
-      }));
-      setActiveRow(null);
-      setSignature(null);
-      setNotes('');
-      setPendingStatus('given');
+      const existing = signoffs.find((s) => s.id === signoffId);
+      const { error } = await supabase
+        .from('medication_signoffs')
+        .update({
+          status: pendingStatus,
+          recorded_by: staffName.trim(),
+          // Persist the captured signature data URL onto the record so
+          // it survives after the row collapses — this is the actual
+          // fix for "signature doesn't save".
+          signature: pendingStatus === 'given' ? signature : existing?.signature || null,
+          notes: notes.trim(),
+          signed_at: new Date().toISOString(),
+        })
+        .eq('id', signoffId);
+      if (error) {
+        alert('Could not save sign-off: ' + error.message);
+      } else {
+        await loadSignoffs();
+        setActiveRow(null);
+        setSignature(null);
+        setNotes('');
+        setPendingStatus('given');
+      }
       setSubmitting(false);
     },
-    [pendingStatus, signature, notes, selectedId, staffName]
+    [pendingStatus, signature, notes, signoffs, staffName, loadSignoffs]
   );
 
-  function addDose() {
+  async function addDose() {
     if (!requireStaffName(staffName)) return;
     if (!newDose.medication_name.trim()) {
       alert('Enter a medication name.');
       return;
     }
-    const entry = {
-      id: `new-${Date.now()}`,
+    setAddingDose(true);
+    const { error } = await supabase.from('medication_signoffs').insert({
+      participant_id: selectedId,
       medication_name: newDose.medication_name.trim(),
       scheduled_date: date,
       scheduled_time: newDose.scheduled_time,
       status: 'pending',
-      recorded_by: '',
       added_by: staffName.trim(),
-      signature: null,
-    };
-    setSignoffsByParticipant((prev) => ({
-      ...prev,
-      [selectedId]: [...(prev[selectedId] || []), entry].sort((a, b) => a.scheduled_time.localeCompare(b.scheduled_time)),
-    }));
-    setNewDose({ medication_name: '', scheduled_time: '08:00' });
-    setAddOpen(false);
+    });
+    if (error) {
+      alert('Could not add medication time: ' + error.message);
+    } else {
+      await loadSignoffs();
+      setNewDose({ medication_name: '', scheduled_time: '08:00' });
+      setAddOpen(false);
+    }
+    setAddingDose(false);
   }
 
-  function removeDose(signoffId) {
-    setSignoffsByParticipant((prev) => ({
-      ...prev,
-      [selectedId]: (prev[selectedId] || []).filter((s) => s.id !== signoffId),
-    }));
+  async function removeDose(signoffId) {
+    const { error } = await supabase.from('medication_signoffs').delete().eq('id', signoffId);
+    if (!error) setSignoffs((prev) => prev.filter((s) => s.id !== signoffId));
   }
 
   if (!selectedParticipant) {
@@ -890,7 +807,7 @@ function MedicationSignOff() {
       </div>
 
       <div className="space-y-2">
-        {signoffs.map((s) => (
+        {todaysSignoffs.map((s) => (
           <div key={s.id} className="rounded-xl border border-slate-200 overflow-hidden">
             <button
               type="button"
@@ -980,9 +897,10 @@ function MedicationSignOff() {
             )}
           </div>
         ))}
-        {signoffs.length === 0 && (
+        {todaysSignoffs.length === 0 && !loadingSignoffs && (
           <p className="text-sm text-slate-400 text-center py-4">No medications scheduled yet.</p>
         )}
+        {loadingSignoffs && <p className="text-xs text-slate-400 text-center">Loading...</p>}
       </div>
 
       {/* Dynamic dose-time entry — support workers add doses on the fly rather than
@@ -1017,9 +935,10 @@ function MedicationSignOff() {
             <button
               type="button"
               onClick={addDose}
-              className="hhcs-btn-primary flex-1 py-2 rounded-lg text-sm font-semibold"
+              disabled={addingDose}
+              className="hhcs-btn-primary flex-1 py-2 rounded-lg text-sm font-semibold disabled:cursor-not-allowed"
             >
-              Add
+              {addingDose ? 'Adding...' : 'Add'}
             </button>
           </div>
         </div>
@@ -1041,52 +960,87 @@ function MedicationSignOff() {
 function FoodDiaryGrid() {
   const { selectedParticipant, selectedId } = useParticipant();
   const { staffName } = useStaff();
-  const { diaryByParticipant, setDiaryByParticipant } = useFoodDiary();
+  const [entries, setEntries] = useState([]); // flat rows from food_diary_entries
+  const [loadingEntries, setLoadingEntries] = useState(false);
   const [activeCell, setActiveCell] = useState(null);
   const [draft, setDraft] = useState({ time: '', description: '', fluids_ml: '', notes: '' });
+  const [saving, setSaving] = useState(false);
   const [weekOffset, setWeekOffset] = useState(0); // 0 = this week, -1 = last week, +1 = next week...
 
   const weekStartDate = useMemo(() => addDays(CURRENT_WEEK_START, weekOffset * 7), [weekOffset]);
   const weekDates = useMemo(() => generateWeekDates(weekStartDate), [weekStartDate]);
-  const participantDiary = diaryByParticipant[selectedId] || {};
+
+  // Persisted to the "food_diary_entries" table (participant_id, date,
+  // meal_key, time, description, fluids_ml, notes, recorded_by,
+  // updated_at) — this used to be in-memory only, which is why entries
+  // vanished on refresh. Loads every entry for the participant so paging
+  // between weeks doesn't need a fresh fetch each time.
+  const loadEntries = useCallback(async () => {
+    if (!selectedId) return;
+    setLoadingEntries(true);
+    const { data, error } = await supabase
+      .from('food_diary_entries')
+      .select('*')
+      .eq('participant_id', selectedId);
+    if (!error) setEntries(data || []);
+    setLoadingEntries(false);
+  }, [selectedId]);
 
   // Only reset the open cell when the participant changes — the tab now
   // stays mounted across navigation, so we don't want to blow away an
   // in-progress entry just because the worker paged the week forward/back.
-  useEffect(() => { setActiveCell(null); }, [selectedId]);
+  useEffect(() => {
+    setActiveCell(null);
+    loadEntries();
+  }, [selectedId, loadEntries]);
+
+  function findEntry(date, mealKey) {
+    return entries.find((e) => e.date === date && e.meal_key === mealKey) || null;
+  }
 
   function openCell(date, mealKey) {
-    const existing = participantDiary[date]?.[mealKey] || { time: '', description: '', fluids_ml: '', notes: '' };
+    const existing = findEntry(date, mealKey);
     setDraft({
-      time: existing.time || '',
-      description: existing.description || '',
-      fluids_ml: existing.fluids_ml ?? '',
-      notes: existing.notes || '',
+      time: existing?.time || '',
+      description: existing?.description || '',
+      fluids_ml: existing?.fluids_ml ?? '',
+      notes: existing?.notes || '',
     });
     setActiveCell({ date, mealKey });
   }
 
-  function saveCell() {
+  async function saveCell() {
     if (!requireStaffName(staffName)) return;
     const { date, mealKey } = activeCell;
-    setDiaryByParticipant((prev) => {
-      const participantData = { ...(prev[selectedId] || {}) };
-      const dayData = { ...(participantData[date] || {}) };
-      dayData[mealKey] = {
-        time: draft.time,
-        description: draft.description,
-        fluids_ml: mealKey === 'fluids' ? Number(draft.fluids_ml) || 0 : undefined,
-        notes: draft.notes,
+    setSaving(true);
+    // Upsert on the natural key (participant_id, date, meal_key) so
+    // re-saving the same meal/day updates the same row instead of
+    // creating duplicates or erroring.
+    const { error } = await supabase.from('food_diary_entries').upsert(
+      {
+        participant_id: selectedId,
+        date,
+        meal_key: mealKey,
+        time: draft.time || null,
+        description: draft.description || null,
+        fluids_ml: mealKey === 'fluids' ? Number(draft.fluids_ml) || 0 : null,
+        notes: draft.notes || null,
         recorded_by: staffName.trim(),
-      };
-      participantData[date] = dayData;
-      return { ...prev, [selectedId]: participantData };
-    });
-    setActiveCell(null);
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'participant_id,date,meal_key' }
+    );
+    if (error) {
+      alert('Could not save entry: ' + error.message);
+    } else {
+      await loadEntries();
+      setActiveCell(null);
+    }
+    setSaving(false);
   }
 
   function cellSummary(date, mealKey) {
-    const entry = participantDiary[date]?.[mealKey];
+    const entry = findEntry(date, mealKey);
     if (!entry) return null;
     const text = mealKey === 'fluids' ? (entry.fluids_ml ? `${entry.fluids_ml}ml` : null) : (entry.description || null);
     return text ? { text, time: entry.time || null, recordedBy: entry.recorded_by } : null;
@@ -1134,6 +1088,8 @@ function FoodDiaryGrid() {
           ›
         </button>
       </div>
+
+      {loadingEntries && <p className="text-xs text-slate-400 text-center">Loading...</p>}
 
       <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
         <div className="overflow-x-auto">
@@ -1249,10 +1205,10 @@ function FoodDiaryGrid() {
             <button
               type="button"
               onClick={saveCell}
-              disabled={!staffName.trim()}
+              disabled={saving || !staffName.trim()}
               className="hhcs-btn-primary flex-1 py-2 rounded-lg text-sm font-semibold disabled:cursor-not-allowed"
             >
-              Save
+              {saving ? 'Saving...' : 'Save'}
             </button>
           </div>
           {!staffName.trim() && (
@@ -1351,27 +1307,48 @@ function AmPmTimeInput({ value, onChange }) {
 function SleepLog() {
   const { selectedParticipant, selectedId } = useParticipant();
   const { staffName } = useStaff();
-  const { logsByParticipant, setLogsByParticipant, dayNotesByParticipant, setDayNotesByParticipant } = useSleepLogData();
+  const [records, setRecords] = useState([]); // flat rows from sleep_logs
+  const [loadingRecords, setLoadingRecords] = useState(false);
   const [date, setDate] = useState(TODAY_STR);
   const [draft, setDraft] = useState({ sleep_date: TODAY_STR, sleep_time: '', wake_date: TODAY_STR, wake_time: '', how_awoken: AWOKEN_OPTIONS[0], mood: MOOD_OPTIONS[0] });
   const [editing, setEditing] = useState(true);
   const [saving, setSaving] = useState(false);
   const [dayNotesDraft, setDayNotesDraft] = useState('');
+  const [savedDayNotes, setSavedDayNotes] = useState('');
   const [notesSaved, setNotesSaved] = useState(true);
   const [notesSaving, setNotesSaving] = useState(false);
   const [notesLoading, setNotesLoading] = useState(false);
   const [notesError, setNotesError] = useState('');
 
-  const dayLogs = logsByParticipant[selectedId]?.[date] || [];
-  const existingRecord = dayLogs[0] || null;
-  const savedDayNotes = dayNotesByParticipant[selectedId]?.[date] || '';
+  const existingRecord = records.find((r) => r.date === date) || null;
 
-  // One sleep record per participant per date. If a record already exists
-  // we open in a clean read-only "view" state (professional summary) with
-  // an Edit button — the same pattern used for Progress Notes elsewhere in
-  // the app — rather than always showing an open form.
+  // Persisted to the "sleep_logs" table (participant_id, date, sleep_date,
+  // sleep_time, wake_date, wake_time, how_awoken, mood, recorded_by,
+  // updated_at). This was previously only held in React state, which is
+  // why Sleep Time / Wake Time vanished on refresh — the day-level Sleep
+  // Notes box below was already correctly persisted to `sleep_notes`, but
+  // the actual sleep record itself never touched the database at all.
+  const loadRecords = useCallback(async () => {
+    if (!selectedId) return;
+    setLoadingRecords(true);
+    const { data, error } = await supabase
+      .from('sleep_logs')
+      .select('*')
+      .eq('participant_id', selectedId);
+    if (!error) setRecords(data || []);
+    setLoadingRecords(false);
+  }, [selectedId]);
+
   useEffect(() => {
-    const rec = logsByParticipant[selectedId]?.[date]?.[0];
+    loadRecords();
+  }, [selectedId, loadRecords]);
+
+  // If a record already exists we open in a clean read-only "view" state
+  // (professional summary) with an Edit button — the same pattern used
+  // for Progress Notes elsewhere in the app — rather than always showing
+  // an open form.
+  useEffect(() => {
+    const rec = records.find((r) => r.date === date) || null;
     setDraft({
       sleep_date: rec?.sleep_date || date,
       sleep_time: rec?.sleep_time || '',
@@ -1382,7 +1359,7 @@ function SleepLog() {
     });
     setEditing(!rec);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId, date]);
+  }, [selectedId, date, records.length]);
 
   // Load the persisted note for this participant + date from the
   // `sleep_notes` table (participant_id, date, notes, updated_by,
@@ -1406,17 +1383,10 @@ function SleepLog() {
         // Keep whatever is cached locally and surface the error rather
         // than blanking the textarea out.
         setNotesError(error.message);
-        setDayNotesDraft(savedDayNotes);
       } else {
         const loaded = data?.notes ?? '';
         setDayNotesDraft(loaded);
-        // Mirror into the shared context so ShiftReport and other
-        // consumers stay in sync with what's actually in the database.
-        setDayNotesByParticipant((prev) => {
-          const participantNotes = { ...(prev[selectedId] || {}) };
-          participantNotes[date] = loaded;
-          return { ...prev, [selectedId]: participantNotes };
-        });
+        setSavedDayNotes(loaded);
       }
       setNotesSaved(true);
       setNotesLoading(false);
@@ -1426,34 +1396,37 @@ function SleepLog() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, date]);
 
-  function saveRecord() {
+  async function saveRecord() {
     if (!requireStaffName(staffName)) return;
     if (!draft.sleep_time && !draft.wake_time) {
       alert('Enter a sleep time and/or wake time before saving.');
       return;
     }
     setSaving(true);
-    setLogsByParticipant((prev) => {
-      const participantLogs = { ...(prev[selectedId] || {}) };
-      const existing = participantLogs[date]?.[0];
-      const record = {
-        id: existing?.id || `sl-${selectedId}-${date}`,
-        status: 'asleep',
-        time_slot: draft.sleep_time || existing?.time_slot || '00:00',
+    // Upsert on the natural key (participant_id, date) so re-saving the
+    // same day updates the same row instead of creating duplicates.
+    const { error } = await supabase.from('sleep_logs').upsert(
+      {
+        participant_id: selectedId,
+        date,
         sleep_date: draft.sleep_date || date,
-        sleep_time: draft.sleep_time,
+        sleep_time: draft.sleep_time || null,
         wake_date: draft.wake_date || date,
-        wake_time: draft.wake_time,
+        wake_time: draft.wake_time || null,
         how_awoken: draft.how_awoken,
         mood: draft.mood,
         recorded_by: staffName.trim(),
         updated_at: new Date().toISOString(),
-      };
-      participantLogs[date] = [record];
-      return { ...prev, [selectedId]: participantLogs };
-    });
+      },
+      { onConflict: 'participant_id,date' }
+    );
+    if (error) {
+      alert('Could not save sleep record: ' + error.message);
+    } else {
+      await loadRecords();
+      setEditing(false);
+    }
     setSaving(false);
-    setEditing(false);
   }
 
   function startEditRecord() {
@@ -1473,12 +1446,14 @@ function SleepLog() {
     setEditing(false);
   }
 
-  function clearRecord() {
-    setLogsByParticipant((prev) => {
-      const participantLogs = { ...(prev[selectedId] || {}) };
-      participantLogs[date] = [];
-      return { ...prev, [selectedId]: participantLogs };
-    });
+  async function clearRecord() {
+    if (!existingRecord) return;
+    const { error } = await supabase.from('sleep_logs').delete().eq('id', existingRecord.id);
+    if (error) {
+      alert('Could not clear sleep record: ' + error.message);
+      return;
+    }
+    await loadRecords();
     setDraft({ sleep_date: date, sleep_time: '', wake_date: date, wake_time: '', how_awoken: AWOKEN_OPTIONS[0], mood: MOOD_OPTIONS[0] });
     setEditing(true);
   }
@@ -1506,11 +1481,7 @@ function SleepLog() {
     if (error) {
       setNotesError('Could not save notes: ' + error.message);
     } else {
-      setDayNotesByParticipant((prev) => {
-        const participantNotes = { ...(prev[selectedId] || {}) };
-        participantNotes[date] = dayNotesDraft;
-        return { ...prev, [selectedId]: participantNotes };
-      });
+      setSavedDayNotes(dayNotesDraft);
       setNotesSaved(true);
     }
     setNotesSaving(false);
@@ -2467,7 +2438,7 @@ function GalleryTab() {
               <img
                 src={p.displayUrl}
                 alt="Uploaded"
-                className="w-full h-32 object-cover bg-slate-100"
+                className="w-full h-32 object-contain bg-slate-100"
                 onError={(e) => { e.currentTarget.style.display = 'none'; e.currentTarget.nextSibling.style.display = 'flex'; }}
               />
             ) : null}
@@ -2541,11 +2512,12 @@ function TabNav({ active, onChange }) {
    ============================================================ */
 function ShiftReportButton() {
   const { selectedParticipant, selectedId } = useParticipant();
-  const { signoffsByParticipant } = useMedicationData();
-  const { diaryByParticipant } = useFoodDiary();
-  const { logsByParticipant } = useSleepLogData();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [todaysMeds, setTodaysMeds] = useState([]);
+  const [foodEntries, setFoodEntries] = useState([]);
+  const [sleepRecord, setSleepRecord] = useState(null);
   const [progressNotes, setProgressNotes] = useState([]);
   const [incidents, setIncidents] = useState([]);
   const [photos, setPhotos] = useState([]);
@@ -2554,12 +2526,32 @@ function ShiftReportButton() {
   async function generateReport() {
     if (!selectedId) return;
     setLoading(true);
-    const [{ data: notesData }, { data: incidentsData }, { data: photosData }, { data: sleepNotesData }] = await Promise.all([
+    setLoadError('');
+    // Everything here is fetched straight from Supabase — the same tables
+    // each tab itself reads from and writes to — so the report always
+    // reflects what's actually saved, not a stale in-memory copy.
+    const [
+      { data: medsData, error: medsErr },
+      { data: foodData, error: foodErr },
+      { data: sleepData, error: sleepErr },
+      { data: notesData },
+      { data: incidentsData },
+      { data: photosData },
+      { data: sleepNotesData },
+    ] = await Promise.all([
+      supabase.from('medication_signoffs').select('*').eq('participant_id', selectedId).eq('scheduled_date', TODAY_STR).order('scheduled_time', { ascending: true }),
+      supabase.from('food_diary_entries').select('*').eq('participant_id', selectedId).eq('date', TODAY_STR),
+      supabase.from('sleep_logs').select('*').eq('participant_id', selectedId).eq('date', TODAY_STR).maybeSingle(),
       supabase.from('progress_notes').select('*').eq('participant_id', selectedId).eq('date', TODAY_STR),
       supabase.from('incidents').select('*').eq('participant_id', selectedId).eq('date', TODAY_STR),
       supabase.from('gallery_photos').select('*').eq('participant_id', selectedId),
       supabase.from('sleep_notes').select('*').eq('participant_id', selectedId).eq('date', TODAY_STR).maybeSingle(),
     ]);
+    const firstError = medsErr || foodErr || sleepErr;
+    if (firstError) setLoadError('Some sections may be incomplete: ' + firstError.message);
+    setTodaysMeds(medsData || []);
+    setFoodEntries(foodData || []);
+    setSleepRecord(sleepData || null);
     setProgressNotes(notesData || []);
     setIncidents(incidentsData || []);
     // Resolve real, viewable image URLs the same way the Gallery tab
@@ -2574,10 +2566,8 @@ function ShiftReportButton() {
 
   if (!selectedParticipant) return null;
 
-  const todaysMeds = (signoffsByParticipant[selectedId] || []).filter((s) => s.scheduled_date === TODAY_STR);
-  const foodToday = diaryByParticipant[selectedId]?.[TODAY_STR] || {};
-  const sleepToday = logsByParticipant[selectedId]?.[TODAY_STR] || [];
-  const sleepRecord = sleepToday[0] || null;
+  const foodToday = {};
+  foodEntries.forEach((e) => { foodToday[e.meal_key] = e; });
 
   // One shift is usually worked by one support worker, so repeating their
   // name after every single line reads as cluttered/unprofessional. We
@@ -2588,7 +2578,7 @@ function ShiftReportButton() {
     new Set(
       [
         ...todaysMeds.map((m) => m.recorded_by),
-        ...Object.values(foodToday).map((e) => e?.recorded_by),
+        ...foodEntries.map((e) => e.recorded_by),
         sleepRecord?.recorded_by,
         sleepNotesRecord?.updated_by,
         ...progressNotes.map((n) => n.recorded_by),
@@ -2608,8 +2598,11 @@ function ShiftReportButton() {
       >
         {loading ? 'Preparing report...' : 'Download & Print Shift Report'}
       </button>
+      {loadError && !open && (
+        <p className="text-xs text-red-600 font-medium mt-1">{loadError}</p>
+      )}
 
-      {open && (
+      {open && createPortal(
         <div className="fixed inset-0 z-50 bg-black/60 flex items-start justify-center overflow-y-auto p-4">
           <div className="bg-white rounded-xl max-w-2xl w-full my-8 p-6 sm:p-8 shadow-xl" id="hhcs-print-report">
             <div className="flex items-center justify-between mb-5 print:hidden">
@@ -2716,6 +2709,12 @@ function ShiftReportButton() {
                   </p>
                   <p><span className="font-medium">How Awoken:</span> {sleepRecord.how_awoken || '—'}</p>
                   <p><span className="font-medium">Mood:</span> {sleepRecord.mood || '—'}</p>
+                  <p className="text-xs text-slate-400">
+                    Recorded by {sleepRecord.recorded_by || '—'}
+                    {sleepRecord.updated_at
+                      ? ` · logged ${new Date(sleepRecord.updated_at).toLocaleString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+                      : ''}
+                  </p>
                 </div>
               )}
               {sleepNotesRecord?.notes && (
@@ -2772,7 +2771,7 @@ function ShiftReportButton() {
                       <img
                         src={p.displayUrl}
                         alt=""
-                        className="w-full h-20 object-cover rounded border border-slate-200 bg-slate-100"
+                        className="w-full h-20 object-contain rounded border border-slate-200 bg-slate-100"
                         onError={(e) => { e.currentTarget.style.display = 'none'; e.currentTarget.nextSibling.style.display = 'flex'; }}
                       />
                     ) : null}
@@ -2791,7 +2790,8 @@ function ShiftReportButton() {
               Generated {new Date().toLocaleString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
             </footer>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </>
   );
@@ -2817,7 +2817,7 @@ function Dashboard() {
   return (
     <div className="min-h-screen bg-slate-100 p-4 sm:p-6 lg:p-10">
       <div className="max-w-md sm:max-w-xl lg:max-w-6xl mx-auto lg:grid lg:grid-cols-[300px_1fr] lg:gap-6 lg:items-start">
-        <div className="space-y-4 lg:sticky lg:top-10">
+        <div className="space-y-4 lg:sticky lg:top-10 hhcs-app-sidebar">
           <HopeHeaderBanner />
 
           <StaffAttributionBar />
@@ -2849,14 +2849,8 @@ export default function App() {
   return (
     <ParticipantProvider>
       <StaffProvider>
-        <MedicationDataProvider>
-          <FoodDiaryProvider>
-            <SleepLogDataProvider>
-              <style>{THEME_CSS}</style>
-              <AppShell />
-            </SleepLogDataProvider>
-          </FoodDiaryProvider>
-        </MedicationDataProvider>
+        <style>{THEME_CSS}</style>
+        <AppShell />
       </StaffProvider>
     </ParticipantProvider>
   );
