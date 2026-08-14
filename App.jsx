@@ -2633,8 +2633,17 @@ function ShiftReportButton() {
             </div>
 
             <header className="mb-6 border-b-2 hhcs-border-navy pb-4">
-              <h1 className="text-2xl font-bold hhcs-text-navy">Hope Health & Care Services</h1>
-              <p className="text-sm text-slate-500">NDIS Participant Care Log — Shift Report</p>
+              <div className="flex items-center gap-3">
+                <img
+                  src={HOPE_LOGO_DATA_URI}
+                  alt="Hope Health & Care Services logo"
+                  className="w-14 h-14 rounded-full border border-slate-200 object-contain p-0.5 shrink-0"
+                />
+                <div className="min-w-0">
+                  <h1 className="text-2xl font-bold hhcs-text-navy leading-tight">Hope Health & Care Services</h1>
+                  <p className="text-sm text-slate-500">NDIS Participant Care Log — Shift Report</p>
+                </div>
+              </div>
               <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
                 <div>
                   <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Participant</p>
