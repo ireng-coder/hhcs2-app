@@ -1,53 +1,88 @@
-# HHCS2 App
+# Make Hope Health & Care Services installable (PWA)
 
-NDIS participant care log — staff portal for Hope Health & Care Services.
+This turns your live app into something people can "Add to Home Screen" /
+"Install" on desktop, Android, and iPhone — using your logo as the icon.
 
-## Setup
+## 1. Add these files to your project (in GitHub)
 
-```bash
-npm install
-cp .env.example .env.local
+Copy this whole `pwa-files` folder's contents into your project's `public/`
+folder, so you end up with:
+
+```
+public/
+  manifest.json
+  sw.js
+  icons/
+    icon-192.png
+    icon-512.png
+    icon-maskable-512.png
+    apple-touch-icon.png
+    favicon-32.png
+    favicon-16.png
 ```
 
-Open `.env.local` and fill in `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` —
-use the exact same values as your existing NDIS Staff Portal, since this app
-reuses that same Supabase project (same `participants` table).
+(If your project doesn't have a `public/` folder — e.g. plain HTML — put
+them at the root next to `index.html` instead, and remove the leading `/`
+from the paths in step 2/3 if your host needs relative paths.)
 
-Run `hhcs2_schema.sql` once in your Supabase project's SQL editor. It only
-adds two new tables (`progress_notes`, `incidents`) — it does not touch your
-existing `participants` table or any other data. Check the comment inside
-the file about matching the `participant_id` column type to your existing
-`participants.id` type before running it.
+## 2. Add these tags to `index.html`, inside `<head>`
 
-## Run locally
-
-```bash
-npm run dev
+```html
+<link rel="manifest" href="/manifest.json" />
+<link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png" />
+<link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png" />
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+<meta name="theme-color" content="#0A4D8C" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Hope Health" />
 ```
 
-Open the localhost URL it prints — do not open `index.html` directly in the
-browser, the module imports won't resolve without Vite's dev server.
+## 3. Register the service worker
 
-## Build for deployment
+Chrome/Edge won't show the desktop "Install" button without an active
+service worker, even a do-nothing one like `sw.js` here. Add this near the
+top of your main entry file (e.g. `src/main.jsx`):
 
-```bash
-npm run build
+```js
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js');
+  });
+}
 ```
 
-Outputs to `dist/`. Deploy that folder (or the whole project) to Vercel as usual.
+## 4. Commit, push, redeploy
 
-## Project files
+```
+git add public/manifest.json public/sw.js public/icons index.html src/main.jsx
+git commit -m "Add PWA manifest and icons for installable app"
+git push
+```
 
-- `App.jsx` — the entire app: all modules (medication, food diary, sleep log,
-  progress notes, incident report), the staff login/PIN screen, and the
-  desktop sidebar layout.
-- `supabaseClient.js` — Supabase connection, reads from `.env.local`.
-- `main.jsx` / `index.html` / `vite.config.js` — standard Vite + React entry points.
-- `hhcs2_schema.sql` — run once in Supabase to create the two new tables.
+Vercel will redeploy automatically from the push.
 
-## Known limitation
+## 5. How people actually install it
 
-The staff login PIN is not validated against anything yet — any 4 digits
-will sign a tapped name in. It's a friendlier entry flow, not real
-authentication. Ask if you'd like a real `staff` table with hashed PINs
-wired up.
+- **Desktop Chrome/Edge**: a small install icon (⊕ or a monitor icon)
+  appears in the address bar once the site loads — click it, then
+  "Install." It then opens in its own window and shows up as a normal
+  desktop app/icon.
+- **Android Chrome**: menu (⋮) → "Add to Home screen" / "Install app."
+- **iPhone/iPad Safari**: Share button → "Add to Home Screen." (iOS
+  doesn't support the auto-install prompt Chrome has — this manual step
+  is the only way on iOS, regardless of what the site does.)
+
+## Notes
+
+- The icon shown to you was flattened from a transparent PNG with a
+  checkerboard background baked into it — I removed that and cropped it
+  to just the rounded-square logo before generating these sizes, so
+  there's no gray checker visible on any device.
+- `icon-maskable-512.png` is a separate version with the logo scaled down
+  and centered on a full-bleed navy square (no built-in rounding) —
+  Android applies its own mask shape (circle, squircle, etc.), and this
+  version is what keeps the logo from getting clipped when that happens.
+- This is a real, standards-based PWA setup (same mechanism apps like
+  Twitter/X, Spotify Web, and Gmail use) — no extra service or paid tool
+  needed.
