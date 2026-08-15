@@ -1,16 +1,35 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>HHCS2 App</title>
+
+    <!-- PWA: makes the app installable with your logo as the icon -->
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="theme-color" content="#0A4D8C" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Hope Health" />
+
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
-
 <body>
     <div id="root"></div>
     <script type="module" src="/main.jsx"></script>
-</body>
 
+    <!-- Registers the service worker Chrome/Edge require before they'll
+         show the desktop "Install" button. Placed here directly so it
+         doesn't depend on editing main.jsx separately. -->
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/sw.js');
+            });
+        }
+    </script>
+</body>
 </html>
